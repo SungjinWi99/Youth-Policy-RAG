@@ -1,0 +1,26 @@
+data:
+  raw: "data/raw/youth_policies.json"
+  sqlite_db: "data/sqlite/youth_policies.db"
+  chroma_dir: "data/chroma/"
+  chroma_collection_name: "youth_policies_rag"
+
+retriever:
+  provider: "upstage"
+  query_model: "solar-embedding-1-large-query"
+  passage_model: "solar-embedding-1-large-passage"
+  search_k: 3
+
+llm:
+  provider: "upstage"
+  model: "solar-pro3"
+
+evaluation:
+  example_path: "data/eval/examples.jsonl"
+  provider: "openai"
+  model: "gpt-5.4-mini"
+  dataset_name: "Youth Policy RAG Sample"
+  experiment_prefix: "youth-policy-rag"
+  max_concurrency: 1
+
+database:
+  echo: true

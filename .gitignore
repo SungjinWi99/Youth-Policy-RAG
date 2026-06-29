@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+.env
+*.json
+
+data/*
+!data/eval/
+data/eval/*
+!data/eval/examples.jsonl
+
+test.ipynb
