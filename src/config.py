@@ -9,6 +9,7 @@ CONFIG_FILENAME = "config.yaml"
 class DataConfig(BaseModel):
   raw: str
   sqlite_db: str
+  conversation_db: str
   chroma_dir: str
   chroma_collection_name: str
 
@@ -21,6 +22,10 @@ class RetrieverConfig(BaseModel):
 class LLMConfig(BaseModel):
   provider: Literal['google', 'openai', 'upstage']
   model: str
+  max_input_tokens: int = Field(gt=0)
+  summary_trigger_ratio: float = Field(gt=0, lt=1)
+  summary_keep_recent_turns: int = Field(ge=1)
+  token_chars_per_token: float = Field(gt=0)
 
 class EvaluationConfig(BaseModel):
   example_path: str

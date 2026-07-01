@@ -4,11 +4,11 @@ from unittest.mock import patch
 
 from pydantic import ValidationError
 
-from src.config import EvaluationConfig
+from src.config import EvaluationConfig, LLMConfig
 from src.factory import (
     CHAT_MODEL_CLASSES,
     EMBEDDING_MODEL_CLASSES,
-    build_rag_pipeline,
+    build_rag_graph,
     create_chat_model,
     create_embedding_model,
 )
@@ -30,6 +30,17 @@ class FactoryTest(unittest.TestCase):
                 dataset_name="dataset",
                 experiment_prefix="experiment",
                 max_concurrency=0,
+            )
+
+    def test_summary_trigger_ratio_must_be_between_zero_and_one(self):
+        with self.assertRaises(ValidationError):
+            LLMConfig(
+                provider="upstage",
+                model="model",
+                max_input_tokens=32768,
+                summary_trigger_ratio=1.0,
+                summary_keep_recent_turns=3,
+                token_chars_per_token=2.0,
             )
 
     def test_create_chat_model_passes_model_and_options(self):
@@ -59,16 +70,24 @@ class FactoryTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown"):
             create_embedding_model("unknown", "model")
 
-    @patch("src.factory.RAGPipeline")
+    @patch("src.factory.RAGGraph")
+    @patch("src.factory.AnswerGenerator")
+    @patch("src.factory.ConversationSummarizer")
+    @patch("src.factory.PolicyRetriever")
+    @patch("src.factory.create_sqlite_checkpointer")
     @patch("src.factory.Chroma")
     @patch("src.factory.create_chat_model")
     @patch("src.factory.create_embedding_model")
-    def test_build_rag_pipeline_uses_query_embedding(
+    def test_build_rag_graph_uses_query_embedding(
         self,
         create_embedding,
         create_chat,
         chroma,
-        rag_pipeline,
+        create_checkpointer,
+        policy_retriever,
+        conversation_summarizer,
+        answer_generator,
+        rag_graph,
     ):
         config = SimpleNamespace(
             retriever=SimpleNamespace(
@@ -80,18 +99,27 @@ class FactoryTest(unittest.TestCase):
             llm=SimpleNamespace(
                 provider="google",
                 model="generator-model",
+                max_input_tokens=32768,
+                summary_trigger_ratio=0.65,
+                summary_keep_recent_turns=3,
+                token_chars_per_token=2.0,
             ),
             data=SimpleNamespace(
                 chroma_collection_name="policies",
                 chroma_dir="data/chroma",
+                conversation_db="data/sqlite/conversations.db",
             ),
             path=lambda value: f"/project/{value}",
         )
         create_embedding.return_value = "embedding-instance"
         create_chat.return_value = "chat-instance"
         chroma.return_value = "vector-store"
+        create_checkpointer.return_value = "checkpointer"
+        policy_retriever.return_value = "retriever"
+        conversation_summarizer.return_value = "summarizer"
+        answer_generator.return_value = "generator"
 
-        result = build_rag_pipeline(config)
+        result = build_rag_graph(config)
 
         create_embedding.assert_called_once_with(
             provider="upstage",
@@ -106,12 +134,28 @@ class FactoryTest(unittest.TestCase):
             persist_directory="/project/data/chroma",
             embedding_function="embedding-instance",
         )
-        rag_pipeline.assert_called_once_with(
-            llm="chat-instance",
+        create_checkpointer.assert_called_once_with(
+            "/project/data/sqlite/conversations.db"
+        )
+        policy_retriever.assert_called_once_with(
             vector_store="vector-store",
             search_k=3,
         )
-        self.assertEqual(result, rag_pipeline.return_value)
+        conversation_summarizer.assert_called_once_with(
+            "chat-instance",
+            max_input_tokens=32768,
+            summary_trigger_ratio=0.65,
+            keep_recent_turns=3,
+            chars_per_token=2.0,
+        )
+        answer_generator.assert_called_once_with("chat-instance")
+        rag_graph.assert_called_once_with(
+            retriever="retriever",
+            summarizer="summarizer",
+            generator="generator",
+            checkpointer="checkpointer",
+        )
+        self.assertEqual(result, rag_graph.return_value)
 
 
 if __name__ == "__main__":

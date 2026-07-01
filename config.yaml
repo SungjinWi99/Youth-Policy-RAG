@@ -1,6 +1,7 @@
 data:
   raw: "data/raw/youth_policies.json"
   sqlite_db: "data/sqlite/youth_policies.db"
+  conversation_db: "data/sqlite/conversations.db"
   chroma_dir: "data/chroma/"
   chroma_collection_name: "youth_policies_rag"
 
@@ -13,6 +14,10 @@ retriever:
 llm:
   provider: "upstage"
   model: "solar-pro3"
+  max_input_tokens: 32768
+  summary_trigger_ratio: 0.65
+  summary_keep_recent_turns: 3
+  token_chars_per_token: 2.0
 
 evaluation:
   example_path: "data/eval/examples.jsonl"

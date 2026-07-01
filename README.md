@@ -9,6 +9,8 @@
 - Chroma 기반 semantic search
 - 사용자 프로필 기반 metadata filtering
 - 정책 신청 방법, 기간, 자격 조건 등 상세 metadata를 포함한 답변 생성
+- LangGraph `StateGraph` 기반 검색·생성 워크플로
+- 사용자 ID별 SQLite 대화 기록 및 연속 대화
 - FastAPI SSE 스트리밍 응답
 - SQLite 기반 사용자 프로필 CRUD
 - Streamlit 기반 API 테스트 화면
@@ -24,10 +26,12 @@ flowchart LR
 
     CLIENT["API Client / Streamlit"] --> FASTAPI["FastAPI"]
     FASTAPI --> USERDB["SQLite User Profile"]
-    FASTAPI --> RAG["RAGPipeline"]
-    RAG --> CHROMA
-    RAG --> LLM["Chat Model"]
-    LLM --> SSE["SSE Answer"]
+    FASTAPI --> GRAPH["LangGraph RAG"]
+    GRAPH --> RETRIEVE["retrieve node"]
+    RETRIEVE --> CHROMA
+    RETRIEVE --> GENERATE["generate node"]
+    GENERATE --> LLM["Chat Model"]
+    GRAPH --> SSE["SSE metadata / chunks"]
 
     EVALDATA["Evaluation JSONL"] --> LANGSMITH["LangSmith Dataset"]
     LANGSMITH --> EVALRUN["RAG Evaluation"]
@@ -44,7 +48,7 @@ flowchart LR
 ├── data/
 │   ├── raw/                       # OpenAPI 원본 데이터
 │   ├── chroma/                    # Chroma 영속 데이터
-│   ├── sqlite/                    # 사용자 프로필 DB
+│   ├── sqlite/                    # 사용자 프로필 DB, 대화 checkpoint DB
 │   └── eval/examples.jsonl        # 평가 데이터셋
 ├── scripts/
 │   ├── collect_data.py            # 정책 데이터 수집
@@ -52,7 +56,15 @@ flowchart LR
 │   ├── create_eval_dataset.py     # LangSmith Dataset 생성·갱신
 │   └── run_evaluation.py          # RAG 평가 실행
 ├── src/
-│   ├── chat/                      # RAG pipeline, chat API
+│   ├── chat/
+│   │   └── router.py              # chat API
+│   ├── rag/
+│   │   ├── graph.py               # LangGraph workflow와 public API
+│   │   ├── retriever.py           # 사용자 조건 기반 정책 검색
+│   │   ├── summarizer.py          # 대화 압축
+│   │   ├── generator.py           # prompt 구성과 답변 생성
+│   │   ├── state.py               # graph state schema
+│   │   └── prompts.py             # 생성·요약 prompt
 │   ├── user/                      # 사용자 프로필 모델과 API
 │   ├── config.py                  # config.yaml 로더
 │   ├── database.py                # SQLite engine과 session
@@ -86,6 +98,10 @@ retriever:
 llm:
   provider: "upstage"
   model: "solar-pro3"
+  max_input_tokens: 32768
+  summary_trigger_ratio: 0.65
+  summary_keep_recent_turns: 3
+  token_chars_per_token: 2.0
 
 evaluation:
   example_path: "data/eval/examples.jsonl"
@@ -144,7 +160,33 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 - API 문서: `http://127.0.0.1:8000/docs`
 - OpenAPI 스키마: `http://127.0.0.1:8000/openapi.json`
 
-서버 시작 시 SQLite 테이블과 RAG pipeline을 초기화합니다.
+서버 시작 시 SQLite 테이블과 컴파일된 LangGraph RAG를 초기화합니다.
+
+### LangGraph 워크플로
+
+`src/rag/graph.py`의 그래프는 검색 후 예상 prompt 토큰 수를 확인해 필요하면
+대화를 먼저 요약합니다.
+
+```text
+START -> retrieve -> summarize? -> generate -> END
+```
+
+토큰 한도와 요약 임계값은 모델의 `.profile`을 참조하지 않고 `config.yaml`의
+`max_input_tokens`와 `summary_trigger_ratio`만 사용합니다. 오래된 대화는 LLM이
+기존 요약과 합쳐 압축하고, 최근 `summary_keep_recent_turns`개 대화는 원문으로
+유지합니다.
+
+- `retrieve`: 사용자 프로필로 Chroma metadata filter를 만들고 정책 문서를 검색
+- `generate`: 검색 문서와 사용자 프로필을 prompt에 넣어 답변 생성
+- graph state: `user_input`, `user_profile`, `exclude_expired`, `documents`, `answer`
+- conversation state: Human/AI 메시지를 `user_id`별 `thread_id`에 누적
+
+동기 호출, 비동기 호출, SSE 스트리밍 모두 같은 컴파일된 그래프를 사용합니다.
+사용자 프로필은 기존 SQLite DB에서 조회하고, 대화 상태는
+`data/sqlite/conversations.db`의 LangGraph SQLite checkpointer에 별도로
+저장합니다. 같은 `user_id`의 다음 요청에는 이전 질문과 답변이 prompt history로
+포함되며, 다른 사용자 ID의 대화와는 분리됩니다. 사용자 프로필을 삭제하면 해당
+사용자의 대화 checkpoint도 함께 삭제됩니다.
 
 ### Streamlit 데모
 
@@ -213,7 +255,7 @@ LangSmith Dataset을 생성하거나 갱신합니다.
 python -m scripts.create_eval_dataset
 ```
 
-RAG pipeline과 evaluator를 실행합니다.
+LangGraph RAG와 evaluator를 실행합니다.
 
 ```bash
 python -m scripts.run_evaluation

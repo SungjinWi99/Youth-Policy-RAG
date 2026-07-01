@@ -9,7 +9,7 @@ from scripts.create_eval_dataset import (
 )
 from src.config import load_config
 from src.evaluators import build_evaluators
-from src.factory import build_rag_pipeline, create_chat_model
+from src.factory import build_rag_graph, create_chat_model
 from src.user.models import UserProfile
 
 
@@ -45,8 +45,11 @@ def main():
         config.evaluation.dataset_name,
         config.evaluation.example_path,
     )
-    rag = build_rag_pipeline(config)
-    evaluator_llm = build_evaluator_llm(config, rag.llm)
+    rag = build_rag_graph(config)
+    evaluator_llm = build_evaluator_llm(
+        config,
+        rag.generator.llm,
+    )
 
     results = client.evaluate(
         partial(run_rag_target, rag=rag),

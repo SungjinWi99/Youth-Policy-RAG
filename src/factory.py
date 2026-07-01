@@ -6,8 +6,12 @@ from langchain_google_genai import (
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_upstage import ChatUpstage, UpstageEmbeddings
 
-from src.chat.rag import RAGPipeline
+from src.checkpoint import create_sqlite_checkpointer
 from src.config import AppConfig
+from src.rag.generator import AnswerGenerator
+from src.rag.graph import RAGGraph
+from src.rag.retriever import PolicyRetriever
+from src.rag.summarizer import ConversationSummarizer
 
 
 CHAT_MODEL_CLASSES = {
@@ -47,7 +51,7 @@ def create_embedding_model(provider: str, model_name: str, **kwargs):
     return model_class(model=model_name, **kwargs)
 
 
-def build_rag_pipeline(config: AppConfig) -> RAGPipeline:
+def build_rag_graph(config: AppConfig) -> RAGGraph:
     embeddings = create_embedding_model(
         provider=config.retriever.provider,
         model_name=config.retriever.query_model,
@@ -61,8 +65,24 @@ def build_rag_pipeline(config: AppConfig) -> RAGPipeline:
         provider=config.llm.provider,
         model_name=config.llm.model,
     )
-    return RAGPipeline(
-        llm=llm,
+    checkpointer = create_sqlite_checkpointer(
+        config.path(config.data.conversation_db)
+    )
+    retriever = PolicyRetriever(
         vector_store=vector_store,
         search_k=config.retriever.search_k,
+    )
+    summarizer = ConversationSummarizer(
+        llm,
+        max_input_tokens=config.llm.max_input_tokens,
+        summary_trigger_ratio=config.llm.summary_trigger_ratio,
+        keep_recent_turns=config.llm.summary_keep_recent_turns,
+        chars_per_token=config.llm.token_chars_per_token,
+    )
+    generator = AnswerGenerator(llm)
+    return RAGGraph(
+        retriever=retriever,
+        summarizer=summarizer,
+        generator=generator,
+        checkpointer=checkpointer,
     )

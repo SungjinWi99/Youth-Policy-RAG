@@ -13,7 +13,7 @@ from src.evaluators import (
     calculate_context_recall,
     load_examples,
 )
-from src.chat.rag import RAGResult
+from src.rag.state import RAGResult
 
 
 EXAMPLES_PATH = Path(__file__).resolve().parents[1] / "data/eval/examples.jsonl"
@@ -124,7 +124,7 @@ class EvaluationTest(unittest.TestCase):
             self.assertLessEqual(result["score"], 1.0)
             self.assertTrue(result["comment"])
 
-    def test_run_rag_target_uses_pipeline_generate_answer(self):
+    def test_run_rag_target_uses_graph_generate_answer(self):
         rag = FakeRAG()
         result = run_rag_target(
             {

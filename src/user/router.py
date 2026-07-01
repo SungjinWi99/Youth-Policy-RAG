@@ -1,8 +1,10 @@
 from fastapi import Depends, APIRouter, HTTPException
 from sqlmodel import Session
+
+from src.rag.graph import RAGGraph
 from src.user.models import UserProfile
 from src.user.schemas import UserCreate, UserUpdate
-from src.dependencies import get_db
+from src.dependencies import get_db, get_rag_graph
 
 user_router = APIRouter(tags=['youth_policies'])
 
@@ -19,5 +21,11 @@ def update_user_profile(user_id: str, user_data: UserUpdate, db: Session = Depen
   return UserProfile.update(user_id, user_data, db)
 
 @user_router.delete("/user/{user_id}")
-def delete_user_profile(user_id: str, db: Session = Depends(get_db)):
-  return UserProfile.delete(user_id, db)
+def delete_user_profile(
+    user_id: str,
+    db: Session = Depends(get_db),
+    rag: RAGGraph = Depends(get_rag_graph),
+):
+  result = UserProfile.delete(user_id, db)
+  rag.delete_conversation(user_id)
+  return result
