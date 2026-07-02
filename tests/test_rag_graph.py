@@ -6,18 +6,17 @@ from pathlib import Path
 
 from langchain_core.documents import Document
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.prebuilt import ToolNode
 
 from src.checkpoint import create_sqlite_checkpointer
-from src.rag.agent import PolicyAgent
+from src.rag.generator import AnswerGenerator
 from src.rag.graph import RAGGraph
+from src.rag.planner import RetrievalDecision
 from src.rag.prompts import SUMMARY_SYSTEM_PROMPT
 from src.rag.retriever import PolicyRetriever
 from src.rag.summarizer import ConversationSummarizer
-from src.rag.tools import create_search_policies_tool
 from src.user.models import UserProfile
 
 
@@ -46,6 +45,67 @@ class FakeVectorStore:
         return FakeRetriever(self.documents, self.queries)
 
 
+class FakePlanner:
+    def __init__(self, optional_decisions=None):
+        self.optional_decisions = list(optional_decisions or [])
+        self.requests = []
+
+    @staticmethod
+    def _latest_question(request):
+        return request["current_question"]
+
+    def build_prompt_messages(
+        self,
+        request,
+        *,
+        force_retrieval,
+    ):
+        documents = "\n".join(
+            document.page_content
+            for document in request["documents"]
+        )
+        return [
+            SystemMessage(
+                content=(
+                    f"force_retrieval={force_retrieval}\n"
+                    f"{request['conversation_summary']}\n"
+                    f"{documents}"
+                )
+            ),
+            *request["messages"],
+        ]
+
+    def decide(
+        self,
+        request,
+        *,
+        force_retrieval,
+    ):
+        self.requests.append((request, force_retrieval))
+        if force_retrieval:
+            return RetrievalDecision(
+                needs_retrieval=True,
+                query=self._latest_question(request),
+            )
+        if self.optional_decisions:
+            return self.optional_decisions.pop(0)
+        return RetrievalDecision(
+            needs_retrieval=False,
+            query=None,
+        )
+
+    async def adecide(
+        self,
+        request,
+        *,
+        force_retrieval,
+    ):
+        return self.decide(
+            request,
+            force_retrieval=force_retrieval,
+        )
+
+
 class RAGGraphTest(unittest.TestCase):
     def build_graph(
         self,
@@ -58,12 +118,12 @@ class RAGGraphTest(unittest.TestCase):
         summary_keep_recent_turns=3,
         token_chars_per_token=2.0,
         checkpointer=None,
+        planner=None,
     ):
         retriever = PolicyRetriever(
             vector_store=vector_store or self.vector_store,
             search_k=search_k,
         )
-        search_tool = create_search_policies_tool(retriever)
         return RAGGraph(
             summarizer=ConversationSummarizer(
                 llm,
@@ -72,8 +132,9 @@ class RAGGraphTest(unittest.TestCase):
                 keep_recent_turns=summary_keep_recent_turns,
                 chars_per_token=token_chars_per_token,
             ),
-            agent=PolicyAgent(llm, [search_tool]),
-            tool_node=ToolNode([search_tool]),
+            planner=planner or FakePlanner(),
+            retriever=retriever,
+            generator=AnswerGenerator(llm),
             checkpointer=checkpointer or InMemorySaver(),
         )
 
@@ -126,9 +187,11 @@ class RAGGraphTest(unittest.TestCase):
             {
                 "__start__",
                 "prepare",
-                "summarize",
-                "agent",
-                "tools",
+                "summarize_for_planning",
+                "plan_retrieval",
+                "retrieve",
+                "summarize_for_answer",
+                "generate_answer",
                 "__end__",
             },
         )
@@ -139,13 +202,28 @@ class RAGGraphTest(unittest.TestCase):
             },
             {
                 ("__start__", "prepare", False),
-                ("prepare", "agent", True),
-                ("prepare", "summarize", True),
-                ("summarize", "agent", False),
-                ("agent", "tools", True),
-                ("agent", "__end__", True),
-                ("tools", "agent", True),
-                ("tools", "summarize", True),
+                ("prepare", "plan_retrieval", True),
+                ("prepare", "summarize_for_planning", True),
+                (
+                    "summarize_for_planning",
+                    "plan_retrieval",
+                    False,
+                ),
+                ("plan_retrieval", "retrieve", True),
+                (
+                    "plan_retrieval",
+                    "summarize_for_answer",
+                    True,
+                ),
+                ("plan_retrieval", "generate_answer", True),
+                ("retrieve", "summarize_for_answer", True),
+                ("retrieve", "generate_answer", True),
+                (
+                    "summarize_for_answer",
+                    "generate_answer",
+                    False,
+                ),
+                ("generate_answer", "__end__", False),
             },
         )
 
@@ -249,27 +327,68 @@ class RAGGraphTest(unittest.TestCase):
             ["policy-1"],
         )
 
-    def test_agent_calls_search_tool_for_new_topic(self):
-        responses = iter([
-            "월세 정책 답변",
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "search_policies",
-                        "args": {
-                            "query": "서울 청년 취업 지원 정책"
-                        },
-                        "id": "search-call-1",
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            "취업 정책 답변",
-        ])
-
+    def test_planner_receives_current_question_separately(self):
+        planner = FakePlanner()
         graph = self.build_graph(
-            llm=RunnableLambda(lambda _: next(responses)),
+            llm=RunnableLambda(lambda _: "답변"),
+            planner=planner,
+        )
+        profile = UserProfile(user_id="planner-input-user")
+
+        graph.generate_answer(
+            user_input="면접 정장 지원이 필요해",
+            user_profile=profile,
+            exclude_expired=False,
+        )
+        graph.generate_answer(
+            user_input="결혼 비용 지원도 알려줘",
+            user_profile=profile,
+            exclude_expired=False,
+        )
+
+        follow_up_request, _ = planner.requests[-1]
+        self.assertEqual(
+            follow_up_request["current_question"],
+            "결혼 비용 지원도 알려줘",
+        )
+        self.assertNotIn(
+            "결혼 비용 지원도 알려줘",
+            [
+                message.content
+                for message in follow_up_request["messages"]
+            ],
+        )
+        self.assertIn(
+            "면접 정장 지원이 필요해",
+            [
+                message.content
+                for message in follow_up_request["messages"]
+            ],
+        )
+        self.assertTrue(
+            all(
+                isinstance(message, HumanMessage)
+                for message in follow_up_request["messages"]
+            )
+        )
+        self.assertNotIn(
+            "답변",
+            [
+                message.content
+                for message in follow_up_request["messages"]
+            ],
+        )
+
+    def test_planner_requests_retrieval_for_new_topic(self):
+        planner = FakePlanner(optional_decisions=[
+            RetrievalDecision(
+                needs_retrieval=True,
+                query="취업 지원 정책을 알려줘",
+            )
+        ])
+        graph = self.build_graph(
+            llm=RunnableLambda(lambda _: "정책 답변"),
+            planner=planner,
         )
         profile = UserProfile(user_id="topic-user")
 
@@ -288,28 +407,15 @@ class RAGGraphTest(unittest.TestCase):
             self.vector_store.queries,
             [
                 "월세 정책 알려줘",
-                "서울 청년 취업 지원 정책",
+                "취업 지원 정책을 알려줘",
             ],
         )
         snapshot = graph.graph.get_state(
             {"configurable": {"thread_id": "topic-user"}}
         )
         self.assertEqual(
-            snapshot.values["retrieval_mode"],
-            "disabled",
-        )
-        self.assertFalse(
-            any(
-                isinstance(message, ToolMessage)
-                for message in snapshot.values["messages"]
-            )
-        )
-        self.assertFalse(
-            any(
-                isinstance(message, AIMessage)
-                and message.tool_calls
-                for message in snapshot.values["messages"]
-            )
+            snapshot.values["retrieval_query"],
+            "취업 지원 정책을 알려줘",
         )
 
     def test_profile_change_forces_retrieval(self):
@@ -340,6 +446,54 @@ class RAGGraphTest(unittest.TestCase):
                 "내가 받을 정책 알려줘",
                 "지금도 받을 수 있어?",
             ],
+        )
+
+    def test_optional_retrieval_failure_keeps_existing_documents(self):
+        graph = self.build_graph(
+            llm=RunnableLambda(lambda _: "답변"),
+            planner=FakePlanner(optional_decisions=[
+                RetrievalDecision(
+                    needs_retrieval=True,
+                    query="새 정책 검색",
+                )
+            ]),
+        )
+        profile = UserProfile(user_id="retrieval-error-user")
+
+        graph.generate_answer(
+            user_input="기존 정책 알려줘",
+            user_profile=profile,
+            exclude_expired=False,
+        )
+
+        def fail_retrieval(**_):
+            raise RuntimeError("vector store unavailable")
+
+        graph.retriever.retrieve = fail_retrieval
+        result = graph.generate_answer(
+            user_input="다른 정책도 알려줘",
+            user_profile=profile,
+            exclude_expired=False,
+        )
+
+        self.assertEqual(
+            result.retrieved_policy_ids,
+            ["policy-1"],
+        )
+        snapshot = graph.graph.get_state(
+            {
+                "configurable": {
+                    "thread_id": "retrieval-error-user"
+                }
+            }
+        )
+        self.assertIn(
+            "정책 검색 중 오류",
+            snapshot.values["retrieval_error"],
+        )
+        self.assertEqual(
+            snapshot.values["last_retrieval_query"],
+            "기존 정책 알려줘",
         )
 
     def test_long_history_is_summarized_before_generation(self):
@@ -626,26 +780,16 @@ class RAGGraphTest(unittest.TestCase):
             ["테스트 정책 알려줘"],
         )
 
-    def test_stream_answer_emits_tool_search_metadata(self):
-        responses = iter([
-            "월세 정책 답변",
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "search_policies",
-                        "args": {
-                            "query": "서울 청년 취업 지원 정책"
-                        },
-                        "id": "stream-search-call",
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            "취업 정책 답변",
-        ])
+    def test_stream_answer_emits_new_search_metadata(self):
+        responses = iter(["월세 정책 답변", "취업 정책 답변"])
         graph = self.build_graph(
             llm=RunnableLambda(lambda _: next(responses)),
+            planner=FakePlanner(optional_decisions=[
+                RetrievalDecision(
+                    needs_retrieval=True,
+                    query="취업 지원 정책을 알려줘",
+                )
+            ]),
         )
         profile = UserProfile(user_id="stream-tool-user")
         graph.generate_answer(
@@ -682,7 +826,7 @@ class RAGGraphTest(unittest.TestCase):
             self.vector_store.queries,
             [
                 "월세 정책 알려줘",
-                "서울 청년 취업 지원 정책",
+                "취업 지원 정책을 알려줘",
             ],
         )
 

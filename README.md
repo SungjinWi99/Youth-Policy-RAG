@@ -27,11 +27,13 @@ flowchart LR
     CLIENT["API Client / Streamlit"] --> FASTAPI["FastAPI"]
     FASTAPI --> USERDB["SQLite User Profile"]
     FASTAPI --> GRAPH["LangGraph RAG"]
-    GRAPH --> AGENT["policy agent"]
-    AGENT --> TOOLS["search_policies tool"]
-    TOOLS --> CHROMA
-    TOOLS --> AGENT
-    AGENT --> LLM["Chat Model"]
+    GRAPH --> PLANNER["retrieval planner"]
+    PLANNER --> RETRIEVER["policy retriever"]
+    RETRIEVER --> CHROMA
+    PLANNER --> GENERATOR["answer generator"]
+    RETRIEVER --> GENERATOR
+    PLANNER --> LLM["Chat Model"]
+    GENERATOR --> LLM
     GRAPH --> SSE["SSE metadata / chunks"]
 
     EVALDATA["Evaluation JSONL"] --> LANGSMITH["LangSmith Dataset"]
@@ -62,11 +64,11 @@ flowchart LR
 │   ├── rag/
 │   │   ├── graph.py               # LangGraph workflow
 │   │   ├── retriever.py           # 사용자 조건 기반 정책 검색
-│   │   ├── tools.py               # 정책 검색 tool
-│   │   ├── agent.py               # tool calling과 답변 생성
+│   │   ├── planner.py             # 검색 필요성 판단과 query 작성
+│   │   ├── generator.py           # 검색 문서 기반 답변 생성
 │   │   ├── summarizer.py          # 대화 압축
 │   │   ├── state.py               # graph state schema
-│   │   └── prompts.py             # 생성·요약 prompt
+│   │   └── prompts.py             # 검색 판단·생성·요약 prompt
 │   ├── user/                      # 사용자 프로필 모델과 API
 │   ├── config.py                  # config.yaml 로더
 │   ├── database.py                # SQLite engine과 session
@@ -188,24 +190,25 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ### LangGraph 워크플로
 
 ```text
-START -> prepare -> summarize? -> agent
-                                ├─ tools -> summarize? -> agent
-                                └─ END
+START -> prepare -> summarize_for_planning?
+                  -> plan_retrieval
+                       ├─ retrieve -> summarize_for_answer? -> generate_answer
+                       └────────────> summarize_for_answer? -> generate_answer
+                                                                  -> END
 ```
 
-- `prepare`: 문서·프로필 변경을 기준으로 `required/optional` 검색 모드 결정
-- `summarize`: prompt 임계값 초과 시 오래된 대화 압축
-- `agent`: 검색 모드에 따라 Tool을 강제 호출하거나, 기존 문서로 답변하거나,
-  필요할 때만 Tool 호출
-- `tools`: 사용자 프로필 조건으로 정책 문서를 검색하고 검색 모드를
-  `disabled`로 변경
+- `prepare`: 최초 요청·문서 없음·프로필 또는 만료 설정 변경 여부를 코드로
+  판단하고 강제 검색 여부 결정
+- `summarize_for_planning`: 검색 판단 prompt가 임계값을 넘으면 오래된 대화 압축
+- `plan_retrieval`: 구조화 출력으로 검색 필요 여부와 자연어 query 생성
+- `retrieve`: 사용자 프로필 metadata filter를 적용해 정책 문서 검색
+- `summarize_for_answer`: 답변 prompt가 임계값을 넘으면 오래된 대화 압축
+- `generate_answer`: 검색 판단 규칙 없이 현재 문서만 근거로 최종 답변 생성
 
-검색 모드별 Agent 동작:
-
-- `required`: 최초 요청·문서 없음·검색 조건 변경 시
-  `tool_choice="search_policies"`로 검색 강제
-- `optional`: 기존 문서가 유효할 때 `tool_choice="auto"`로 모델이 검색 여부 판단
-- `disabled`: Tool 실행 후 Tool이 없는 chain으로 최종 답변 생성
+문서가 없거나 검색 조건이 달라진 경우에는 코드가 검색을 강제하고 Planner는
+query만 작성합니다. 유효한 기존 문서가 있을 때만 Planner가 재검색 여부를
+판단합니다. 검색 이후에는 그래프 edge가 `generate_answer`로만 연결되므로 한
+요청에서 검색이 반복되지 않습니다.
 
 ### Streamlit 데모
 

@@ -5,15 +5,14 @@ from langchain_google_genai import (
 )
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_upstage import ChatUpstage, UpstageEmbeddings
-from langgraph.prebuilt import ToolNode
 
 from src.checkpoint import create_sqlite_checkpointer
 from src.config import AppConfig
-from src.rag.agent import PolicyAgent
+from src.rag.generator import AnswerGenerator
 from src.rag.graph import RAGGraph
+from src.rag.planner import RetrievalPlanner
 from src.rag.retriever import PolicyRetriever
 from src.rag.summarizer import ConversationSummarizer
-from src.rag.tools import create_search_policies_tool
 
 
 CHAT_MODEL_CLASSES = {
@@ -81,18 +80,10 @@ def build_rag_graph(config: AppConfig) -> RAGGraph:
         keep_recent_turns=config.llm.summary_keep_recent_turns,
         chars_per_token=config.llm.token_chars_per_token,
     )
-    search_policies_tool = create_search_policies_tool(retriever)
-    agent = PolicyAgent(llm, [search_policies_tool])
-    tool_node = ToolNode(
-        [search_policies_tool],
-        handle_tool_errors=(
-            "정책 검색 중 오류가 발생했습니다. "
-            "현재 문서 범위에서 답변하세요."
-        ),
-    )
     return RAGGraph(
         summarizer=summarizer,
-        agent=agent,
-        tool_node=tool_node,
+        planner=RetrievalPlanner(llm),
+        retriever=retriever,
+        generator=AnswerGenerator(llm),
         checkpointer=checkpointer,
     )

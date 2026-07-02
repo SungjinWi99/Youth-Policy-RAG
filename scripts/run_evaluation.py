@@ -51,7 +51,7 @@ def main():
     rag = build_rag_graph(config)
     evaluator_llm = build_evaluator_llm(
         config,
-        rag.agent.llm,
+        rag.generator.llm,
     )
 
     results = client.evaluate(
