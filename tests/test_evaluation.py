@@ -140,6 +140,9 @@ class EvaluationTest(unittest.TestCase):
         self.assertEqual(result["retrieved_policy_ids"], ["policy-1"])
         self.assertEqual(rag.call["user_input"], "질문")
         self.assertEqual(rag.call["user_profile"].age, 25)
+        self.assertTrue(
+            rag.call["user_profile"].user_id.startswith("evaluation-")
+        )
         self.assertFalse(rag.call["exclude_expired"])
 
     def test_apac_api_url_maps_to_apac_ui(self):

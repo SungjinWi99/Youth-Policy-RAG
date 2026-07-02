@@ -27,10 +27,11 @@ flowchart LR
     CLIENT["API Client / Streamlit"] --> FASTAPI["FastAPI"]
     FASTAPI --> USERDB["SQLite User Profile"]
     FASTAPI --> GRAPH["LangGraph RAG"]
-    GRAPH --> RETRIEVE["retrieve node"]
-    RETRIEVE --> CHROMA
-    RETRIEVE --> GENERATE["generate node"]
-    GENERATE --> LLM["Chat Model"]
+    GRAPH --> AGENT["policy agent"]
+    AGENT --> TOOLS["search_policies tool"]
+    TOOLS --> CHROMA
+    TOOLS --> AGENT
+    AGENT --> LLM["Chat Model"]
     GRAPH --> SSE["SSE metadata / chunks"]
 
     EVALDATA["Evaluation JSONL"] --> LANGSMITH["LangSmith Dataset"]
@@ -59,10 +60,11 @@ flowchart LR
 │   ├── chat/
 │   │   └── router.py              # chat API
 │   ├── rag/
-│   │   ├── graph.py               # LangGraph workflow와 public API
+│   │   ├── graph.py               # LangGraph workflow
 │   │   ├── retriever.py           # 사용자 조건 기반 정책 검색
+│   │   ├── tools.py               # 정책 검색 tool
+│   │   ├── agent.py               # tool calling과 답변 생성
 │   │   ├── summarizer.py          # 대화 압축
-│   │   ├── generator.py           # prompt 구성과 답변 생성
 │   │   ├── state.py               # graph state schema
 │   │   └── prompts.py             # 생성·요약 prompt
 │   ├── user/                      # 사용자 프로필 모델과 API
@@ -85,6 +87,27 @@ pip install -r requirements.txt
 ```
 
 ## 설정
+프로젝트 루트의 `.env.example`을 복사해 `.env`를 만듭니다.
+
+```bash
+cp .env.example .env
+```
+
+현재 `config.yaml`의 기본 설정으로 애플리케이션을 실행하려면
+`UPSTAGE_API_KEY`가 필요합니다. 데이터 수집, 다른 provider 사용, RAG 평가에
+필요한 키는 사용하는 기능에 맞게 추가합니다.
+
+
+| 환경변수 | 사용하는 기능 | 필수 여부 |
+| --- | --- | --- |
+| `YOUTH_API_KEY` | `scripts.collect_data` 정책 데이터 수집 | 데이터 수집 시 필수 |
+| `UPSTAGE_API_KEY` | Upstage embedding과 chat model | 현재 기본 설정에서 필수 |
+| `OPENAI_API_KEY` | OpenAI chat model 또는 evaluator | OpenAI provider 사용 시 필수 |
+| `GEMINI_API_KEY` | Google embedding 또는 chat model | Google provider 사용 시 필수 |
+| `LANGSMITH_API_KEY` | Dataset 생성, 평가, tracing | LangSmith 사용 시 필수 |
+| `LANGSMITH_TRACING` | LangChain·LangGraph trace 전송 | 선택 |
+| `LANGSMITH_ENDPOINT` | LangSmith API region 지정 | LangSmith 사용 시 권장 |
+| `LANGSMITH_PROJECT` | trace를 저장할 LangSmith project | tracing 사용 시 권장 |
 
 모델과 검색 설정은 `config.yaml`에서 관리합니다.
 
@@ -164,29 +187,25 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 
 ### LangGraph 워크플로
 
-`src/rag/graph.py`의 그래프는 검색 후 예상 prompt 토큰 수를 확인해 필요하면
-대화를 먼저 요약합니다.
-
 ```text
-START -> retrieve -> summarize? -> generate -> END
+START -> prepare -> summarize? -> agent
+                                ├─ tools -> summarize? -> agent
+                                └─ END
 ```
 
-토큰 한도와 요약 임계값은 모델의 `.profile`을 참조하지 않고 `config.yaml`의
-`max_input_tokens`와 `summary_trigger_ratio`만 사용합니다. 오래된 대화는 LLM이
-기존 요약과 합쳐 압축하고, 최근 `summary_keep_recent_turns`개 대화는 원문으로
-유지합니다.
+- `prepare`: 문서·프로필 변경을 기준으로 `required/optional` 검색 모드 결정
+- `summarize`: prompt 임계값 초과 시 오래된 대화 압축
+- `agent`: 검색 모드에 따라 Tool을 강제 호출하거나, 기존 문서로 답변하거나,
+  필요할 때만 Tool 호출
+- `tools`: 사용자 프로필 조건으로 정책 문서를 검색하고 검색 모드를
+  `disabled`로 변경
 
-- `retrieve`: 사용자 프로필로 Chroma metadata filter를 만들고 정책 문서를 검색
-- `generate`: 검색 문서와 사용자 프로필을 prompt에 넣어 답변 생성
-- graph state: `user_input`, `user_profile`, `exclude_expired`, `documents`, `answer`
-- conversation state: Human/AI 메시지를 `user_id`별 `thread_id`에 누적
+검색 모드별 Agent 동작:
 
-동기 호출, 비동기 호출, SSE 스트리밍 모두 같은 컴파일된 그래프를 사용합니다.
-사용자 프로필은 기존 SQLite DB에서 조회하고, 대화 상태는
-`data/sqlite/conversations.db`의 LangGraph SQLite checkpointer에 별도로
-저장합니다. 같은 `user_id`의 다음 요청에는 이전 질문과 답변이 prompt history로
-포함되며, 다른 사용자 ID의 대화와는 분리됩니다. 사용자 프로필을 삭제하면 해당
-사용자의 대화 checkpoint도 함께 삭제됩니다.
+- `required`: 최초 요청·문서 없음·검색 조건 변경 시
+  `tool_choice="search_policies"`로 검색 강제
+- `optional`: 기존 문서가 유효할 때 `tool_choice="auto"`로 모델이 검색 여부 판단
+- `disabled`: Tool 실행 후 Tool이 없는 chain으로 최종 답변 생성
 
 ### Streamlit 데모
 
@@ -213,6 +232,7 @@ streamlit run demo_streamlit.py --server.port 8501
 | `POST` | `/user/{user_id}` | 사용자 프로필 수정 |
 | `DELETE` | `/user/{user_id}` | 사용자 프로필 삭제 |
 | `POST` | `/chat` | 사용자 프로필 기반 정책 검색 및 SSE 답변 |
+| `DELETE` | `/chat/history/{user_id}` | 사용자 프로필은 유지하고 대화 기록 초기화 |
 
 사용자 등록 예시:
 
@@ -243,6 +263,17 @@ curl -N -X POST http://127.0.0.1:8000/chat \
 
 SSE 응답은 검색 context와 정책 ID를 담은 `metadata`, 답변 텍스트를 담은
 `chunk`, 완료를 알리는 `done` 이벤트 순서로 전달됩니다.
+
+대화 기록 초기화 예시:
+
+```bash
+curl -X DELETE \
+  http://127.0.0.1:8000/chat/history/sample-user
+```
+
+대화 기록을 초기화하면 사용자 프로필은 유지되며, 다음 질문은 기존 대화와 검색
+문서가 없는 새로운 대화로 처리됩니다. Streamlit의 `대화 기록 초기화` 버튼을
+사용하면 서버의 대화 기록과 현재 화면의 메시지를 함께 삭제할 수 있습니다.
 
 ## RAG 평가
 

@@ -1,6 +1,7 @@
 import json
 import os
 from typing import Any
+from urllib.parse import quote
 
 import requests
 import streamlit as st
@@ -75,6 +76,14 @@ def stream_chat(user_id: str, user_input: str, exclude_expired: bool):
             yield event
             if event.get("type") == "done":
                 break
+
+
+def reset_conversation_history(user_id: str) -> tuple[bool, Any]:
+    encoded_user_id = quote(user_id.strip(), safe="")
+    return request_json(
+        "DELETE",
+        f"/chat/history/{encoded_user_id}",
+    )
 
 
 def init_state() -> None:
@@ -173,8 +182,26 @@ def render_chat() -> None:
         help="끄면 정책 종료일이 지난 문서도 검색 후보에 포함합니다.",
     )
 
-    if st.button("Clear chat"):
-        st.session_state.messages = []
+    if st.button(
+        "대화 기록 초기화",
+        help=(
+            "서버에 저장된 LangGraph 대화 기록과 "
+            "현재 화면의 메시지를 함께 삭제합니다."
+        ),
+    ):
+        user_id = st.session_state.active_user_id.strip()
+        if not user_id:
+            st.error(
+                "먼저 User Profile에서 user_id를 입력하거나 조회하세요."
+            )
+        else:
+            ok, data = reset_conversation_history(user_id)
+            if ok:
+                st.session_state.messages = []
+                st.success("대화 기록을 초기화했습니다.")
+            else:
+                st.error("대화 기록 초기화에 실패했습니다.")
+                st.json(data)
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):

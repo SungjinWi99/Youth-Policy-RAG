@@ -1,4 +1,5 @@
 from functools import partial
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from langsmith import Client
@@ -27,9 +28,11 @@ def build_evaluator_llm(config, fallback_llm):
 
 
 def run_rag_target(inputs: dict, *, rag) -> dict:
+    profile_data = dict(inputs.get("user_profile", {}))
+    profile_data.setdefault("user_id", f"evaluation-{uuid4()}")
     result = rag.generate_answer(
         user_input=inputs["question"],
-        user_profile=UserProfile(**inputs.get("user_profile", {})),
+        user_profile=UserProfile(**profile_data),
         exclude_expired=inputs.get("exclude_expired", True),
     )
     return result.model_dump()
@@ -48,7 +51,7 @@ def main():
     rag = build_rag_graph(config)
     evaluator_llm = build_evaluator_llm(
         config,
-        rag.generator.llm,
+        rag.agent.llm,
     )
 
     results = client.evaluate(

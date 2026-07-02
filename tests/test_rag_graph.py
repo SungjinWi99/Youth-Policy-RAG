@@ -6,16 +6,18 @@ from pathlib import Path
 
 from langchain_core.documents import Document
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.prebuilt import ToolNode
 
 from src.checkpoint import create_sqlite_checkpointer
-from src.rag.generator import AnswerGenerator
+from src.rag.agent import PolicyAgent
 from src.rag.graph import RAGGraph
 from src.rag.prompts import SUMMARY_SYSTEM_PROMPT
 from src.rag.retriever import PolicyRetriever
 from src.rag.summarizer import ConversationSummarizer
+from src.rag.tools import create_search_policies_tool
 from src.user.models import UserProfile
 
 
@@ -57,11 +59,12 @@ class RAGGraphTest(unittest.TestCase):
         token_chars_per_token=2.0,
         checkpointer=None,
     ):
+        retriever = PolicyRetriever(
+            vector_store=vector_store or self.vector_store,
+            search_k=search_k,
+        )
+        search_tool = create_search_policies_tool(retriever)
         return RAGGraph(
-            retriever=PolicyRetriever(
-                vector_store=vector_store or self.vector_store,
-                search_k=search_k,
-            ),
             summarizer=ConversationSummarizer(
                 llm,
                 max_input_tokens=max_input_tokens,
@@ -69,7 +72,8 @@ class RAGGraphTest(unittest.TestCase):
                 keep_recent_turns=summary_keep_recent_turns,
                 chars_per_token=token_chars_per_token,
             ),
-            generator=AnswerGenerator(llm),
+            agent=PolicyAgent(llm, [search_tool]),
+            tool_node=ToolNode([search_tool]),
             checkpointer=checkpointer or InMemorySaver(),
         )
 
@@ -88,7 +92,7 @@ class RAGGraphTest(unittest.TestCase):
         self.graph = self.build_graph(
             llm=RunnableLambda(lambda _: "테스트 생성 답변"),
         )
-        self.user_profile = UserProfile()
+        self.user_profile = UserProfile(user_id="test-user")
 
     def test_generate_answer_returns_answer_contexts_and_policy_ids(self):
         result = self.graph.generate_answer(
@@ -103,6 +107,17 @@ class RAGGraphTest(unittest.TestCase):
         self.assertIn("테스트 정책", result.contexts[0])
         self.assertEqual(self.vector_store.search_kwargs, {"k": 3})
 
+    def test_generate_answer_requires_user_profile_id(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "user_profile.user_id",
+        ):
+            self.graph.generate_answer(
+                user_input="지원 내용을 알려줘",
+                user_profile=UserProfile(),
+                exclude_expired=False,
+            )
+
     def test_compiled_graph_has_conditional_summarization_topology(self):
         compiled_graph = self.graph.graph.get_graph()
 
@@ -110,24 +125,28 @@ class RAGGraphTest(unittest.TestCase):
             set(compiled_graph.nodes),
             {
                 "__start__",
-                "retrieve",
+                "prepare",
                 "summarize",
-                "generate",
+                "agent",
+                "tools",
                 "__end__",
             },
         )
         self.assertEqual(
-            [
+            {
                 (edge.source, edge.target, edge.conditional)
                 for edge in compiled_graph.edges
-            ],
-            [
-                ("__start__", "retrieve", False),
-                ("retrieve", "generate", True),
-                ("retrieve", "summarize", True),
-                ("summarize", "generate", False),
-                ("generate", "__end__", False),
-            ],
+            },
+            {
+                ("__start__", "prepare", False),
+                ("prepare", "agent", True),
+                ("prepare", "summarize", True),
+                ("summarize", "agent", False),
+                ("agent", "tools", True),
+                ("agent", "__end__", True),
+                ("tools", "agent", True),
+                ("tools", "summarize", True),
+            },
         )
 
     def test_prompt_token_count_uses_configured_approximation(self):
@@ -180,19 +199,16 @@ class RAGGraphTest(unittest.TestCase):
             user_input="첫 번째 질문",
             user_profile=profile,
             exclude_expired=False,
-            user_id="user-a",
         )
         graph.generate_answer(
             user_input="앞 답변을 더 설명해줘",
             user_profile=profile,
             exclude_expired=False,
-            user_id="user-a",
         )
         graph.generate_answer(
             user_input="새 사용자 질문",
             user_profile=UserProfile(user_id="user-b"),
             exclude_expired=False,
-            user_id="user-b",
         )
 
         self.assertIn("첫 번째 질문", prompts[1])
@@ -203,8 +219,126 @@ class RAGGraphTest(unittest.TestCase):
             self.vector_store.queries,
             [
                 "첫 번째 질문",
-                "첫 번째 질문\n앞 답변을 더 설명해줘",
                 "새 사용자 질문",
+            ],
+        )
+
+    def test_follow_up_reuses_existing_documents(self):
+        graph = self.build_graph(
+            llm=RunnableLambda(lambda _: "답변"),
+        )
+        profile = UserProfile(user_id="reuse-user")
+
+        graph.generate_answer(
+            user_input="테스트 정책 알려줘",
+            user_profile=profile,
+            exclude_expired=False,
+        )
+        result = graph.generate_answer(
+            user_input="지원 내용을 더 설명해줘",
+            user_profile=profile,
+            exclude_expired=False,
+        )
+
+        self.assertEqual(
+            self.vector_store.queries,
+            ["테스트 정책 알려줘"],
+        )
+        self.assertEqual(
+            result.retrieved_policy_ids,
+            ["policy-1"],
+        )
+
+    def test_agent_calls_search_tool_for_new_topic(self):
+        responses = iter([
+            "월세 정책 답변",
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "search_policies",
+                        "args": {
+                            "query": "서울 청년 취업 지원 정책"
+                        },
+                        "id": "search-call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            "취업 정책 답변",
+        ])
+
+        graph = self.build_graph(
+            llm=RunnableLambda(lambda _: next(responses)),
+        )
+        profile = UserProfile(user_id="topic-user")
+
+        graph.generate_answer(
+            user_input="월세 정책 알려줘",
+            user_profile=profile,
+            exclude_expired=False,
+        )
+        graph.generate_answer(
+            user_input="취업 지원은?",
+            user_profile=profile,
+            exclude_expired=False,
+        )
+
+        self.assertEqual(
+            self.vector_store.queries,
+            [
+                "월세 정책 알려줘",
+                "서울 청년 취업 지원 정책",
+            ],
+        )
+        snapshot = graph.graph.get_state(
+            {"configurable": {"thread_id": "topic-user"}}
+        )
+        self.assertEqual(
+            snapshot.values["retrieval_mode"],
+            "disabled",
+        )
+        self.assertFalse(
+            any(
+                isinstance(message, ToolMessage)
+                for message in snapshot.values["messages"]
+            )
+        )
+        self.assertFalse(
+            any(
+                isinstance(message, AIMessage)
+                and message.tool_calls
+                for message in snapshot.values["messages"]
+            )
+        )
+
+    def test_profile_change_forces_retrieval(self):
+        graph = self.build_graph(
+            llm=RunnableLambda(lambda _: "답변"),
+        )
+
+        graph.generate_answer(
+            user_input="내가 받을 정책 알려줘",
+            user_profile=UserProfile(
+                user_id="profile-user",
+                age=24,
+            ),
+            exclude_expired=False,
+        )
+        graph.generate_answer(
+            user_input="지금도 받을 수 있어?",
+            user_profile=UserProfile(
+                user_id="profile-user",
+                age=25,
+            ),
+            exclude_expired=False,
+        )
+
+        self.assertEqual(
+            self.vector_store.queries,
+            [
+                "내가 받을 정책 알려줘",
+                "지금도 받을 수 있어?",
             ],
         )
 
@@ -240,7 +374,6 @@ class RAGGraphTest(unittest.TestCase):
                 user_input=question,
                 user_profile=profile,
                 exclude_expired=False,
-                user_id="summary-user",
             )
 
         self.assertEqual(len(summaries), 1)
@@ -248,10 +381,10 @@ class RAGGraphTest(unittest.TestCase):
         self.assertIn("답변-1", summaries[0])
         self.assertIn(
             "첫 질문과 첫 답변의 압축 요약",
-            generation_prompts[-1][1],
+            generation_prompts[-1][0],
         )
-        self.assertNotIn("첫 질문", generation_prompts[-1][2:])
-        self.assertNotIn("답변-1", generation_prompts[-1][2:])
+        self.assertNotIn("첫 질문", generation_prompts[-1][1:])
+        self.assertNotIn("답변-1", generation_prompts[-1][1:])
 
         snapshot = graph.graph.get_state(
             {"configurable": {"thread_id": "summary-user"}}
@@ -298,7 +431,6 @@ class RAGGraphTest(unittest.TestCase):
                         user_input=question,
                         user_profile=profile,
                         exclude_expired=False,
-                        user_id="async-summary-user",
                     )
                 ]
                 all_events.append(events)
@@ -331,7 +463,6 @@ class RAGGraphTest(unittest.TestCase):
             user_input="삭제 전 질문",
             user_profile=profile,
             exclude_expired=False,
-            user_id="reset-user",
         )
 
         graph.delete_conversation("reset-user")
@@ -339,7 +470,6 @@ class RAGGraphTest(unittest.TestCase):
             user_input="삭제 후 질문",
             user_profile=profile,
             exclude_expired=False,
-            user_id="reset-user",
         )
 
         self.assertNotIn("삭제 전 질문", prompts[1])
@@ -357,7 +487,6 @@ class RAGGraphTest(unittest.TestCase):
                 user_input="재시작 전 질문",
                 user_profile=profile,
                 exclude_expired=False,
-                user_id="persistent-user",
             )
             first_graph.close()
 
@@ -378,7 +507,6 @@ class RAGGraphTest(unittest.TestCase):
                     user_input="이전 대화 기억해?",
                     user_profile=profile,
                     exclude_expired=False,
-                    user_id="persistent-user",
                 )
             finally:
                 second_graph.close()
@@ -402,7 +530,6 @@ class RAGGraphTest(unittest.TestCase):
                         user_input="비동기 질문",
                         user_profile=UserProfile(user_id="async-user"),
                         exclude_expired=False,
-                        user_id="async-user",
                     )
                 ]
 
@@ -465,6 +592,99 @@ class RAGGraphTest(unittest.TestCase):
         self.assertEqual(events[1]["type"], "chunk")
         self.assertEqual(events[1]["data"], "테스트 생성 답변")
         self.assertEqual(events[-1]["type"], "done")
+
+    def test_stream_answer_emits_reused_document_metadata(self):
+        graph = self.build_graph(
+            llm=RunnableLambda(lambda _: "답변"),
+        )
+        profile = UserProfile(user_id="stream-reuse-user")
+        graph.generate_answer(
+            user_input="테스트 정책 알려줘",
+            user_profile=profile,
+            exclude_expired=False,
+        )
+
+        async def collect_events():
+            return [
+                json.loads(event.removeprefix("data: ").strip())
+                async for event in graph.stream_answer(
+                    user_input="지원 내용을 더 설명해줘",
+                    user_profile=profile,
+                    exclude_expired=False,
+                )
+            ]
+
+        events = asyncio.run(collect_events())
+
+        self.assertEqual(events[0]["type"], "metadata")
+        self.assertEqual(
+            events[0]["data"]["retrieved_policy_ids"],
+            ["policy-1"],
+        )
+        self.assertEqual(
+            self.vector_store.queries,
+            ["테스트 정책 알려줘"],
+        )
+
+    def test_stream_answer_emits_tool_search_metadata(self):
+        responses = iter([
+            "월세 정책 답변",
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "search_policies",
+                        "args": {
+                            "query": "서울 청년 취업 지원 정책"
+                        },
+                        "id": "stream-search-call",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            "취업 정책 답변",
+        ])
+        graph = self.build_graph(
+            llm=RunnableLambda(lambda _: next(responses)),
+        )
+        profile = UserProfile(user_id="stream-tool-user")
+        graph.generate_answer(
+            user_input="월세 정책 알려줘",
+            user_profile=profile,
+            exclude_expired=False,
+        )
+
+        async def collect_events():
+            return [
+                json.loads(event.removeprefix("data: ").strip())
+                async for event in graph.stream_answer(
+                    user_input="취업 지원은?",
+                    user_profile=profile,
+                    exclude_expired=False,
+                )
+            ]
+
+        events = asyncio.run(collect_events())
+        metadata_events = [
+            event
+            for event in events
+            if event["type"] == "metadata"
+        ]
+        chunks = [
+            event["data"]
+            for event in events
+            if event["type"] == "chunk"
+        ]
+
+        self.assertEqual(len(metadata_events), 2)
+        self.assertEqual(chunks, ["취업 정책 답변"])
+        self.assertEqual(
+            self.vector_store.queries,
+            [
+                "월세 정책 알려줘",
+                "서울 청년 취업 지원 정책",
+            ],
+        )
 
     def test_stream_answer_forwards_model_tokens_without_duplication(self):
         graph = self.build_graph(

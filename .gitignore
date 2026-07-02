@@ -10,3 +10,7 @@ data/eval/*
 !data/eval/examples.jsonl
 
 test.ipynb
+
+# 개인 설계 문서
+/docs/private/rag_architecture_decisions.md
+/docs/private/todo.md

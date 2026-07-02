@@ -71,7 +71,9 @@ class FactoryTest(unittest.TestCase):
             create_embedding_model("unknown", "model")
 
     @patch("src.factory.RAGGraph")
-    @patch("src.factory.AnswerGenerator")
+    @patch("src.factory.ToolNode")
+    @patch("src.factory.PolicyAgent")
+    @patch("src.factory.create_search_policies_tool")
     @patch("src.factory.ConversationSummarizer")
     @patch("src.factory.PolicyRetriever")
     @patch("src.factory.create_sqlite_checkpointer")
@@ -86,7 +88,9 @@ class FactoryTest(unittest.TestCase):
         create_checkpointer,
         policy_retriever,
         conversation_summarizer,
-        answer_generator,
+        create_search_tool,
+        policy_agent,
+        tool_node,
         rag_graph,
     ):
         config = SimpleNamespace(
@@ -117,7 +121,9 @@ class FactoryTest(unittest.TestCase):
         create_checkpointer.return_value = "checkpointer"
         policy_retriever.return_value = "retriever"
         conversation_summarizer.return_value = "summarizer"
-        answer_generator.return_value = "generator"
+        create_search_tool.return_value = "search-tool"
+        policy_agent.return_value = "agent"
+        tool_node.return_value = "tool-node"
 
         result = build_rag_graph(config)
 
@@ -148,11 +154,22 @@ class FactoryTest(unittest.TestCase):
             keep_recent_turns=3,
             chars_per_token=2.0,
         )
-        answer_generator.assert_called_once_with("chat-instance")
+        create_search_tool.assert_called_once_with("retriever")
+        policy_agent.assert_called_once_with(
+            "chat-instance",
+            ["search-tool"],
+        )
+        tool_node.assert_called_once_with(
+            ["search-tool"],
+            handle_tool_errors=(
+                "정책 검색 중 오류가 발생했습니다. "
+                "현재 문서 범위에서 답변하세요."
+            ),
+        )
         rag_graph.assert_called_once_with(
-            retriever="retriever",
             summarizer="summarizer",
-            generator="generator",
+            agent="agent",
+            tool_node="tool-node",
             checkpointer="checkpointer",
         )
         self.assertEqual(result, rag_graph.return_value)
