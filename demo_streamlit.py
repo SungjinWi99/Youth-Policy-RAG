@@ -1,9 +1,12 @@
 import json
 import os
 from typing import Any
+from urllib.parse import quote
 
 import requests
 import streamlit as st
+
+from policy.utils import REGION_NAMES
 
 
 DEFAULT_API_BASE_URL = os.getenv("YOUTH_RAG_API_URL", "http://127.0.0.1:8000")
@@ -82,6 +85,8 @@ def init_state() -> None:
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("active_user_id", "")
     st.session_state.setdefault("exclude_expired", True)
+    st.session_state.setdefault("policy_id_input", "")
+    st.session_state.setdefault("policy_detail", None)
 
 
 def render_user_form() -> None:
@@ -95,7 +100,11 @@ def render_user_form() -> None:
             gender = st.selectbox("gender", ["", "여성", "남성"], index=0)
         with col2:
             income = st.text_input("income", placeholder="예: 3000")
-            region = st.text_input("region", placeholder="예: 서울특별시")
+            region = st.selectbox(
+                "region",
+                ["", *REGION_NAMES],
+                index=0,
+            )
         job = st.text_input("job", placeholder="선택 입력")
 
         action = st.radio(
@@ -164,13 +173,125 @@ def render_retrieval_metadata(
             st.text(context)
 
 
+def display_value(value: Any) -> str:
+    if value in (None, ""):
+        return "정보 없음"
+    return str(value)
+
+
+def render_policy_detail(policy: dict[str, Any]) -> None:
+    st.subheader(display_value(policy.get("plcyNm")))
+    st.caption(
+        f"정책 ID: {display_value(policy.get('plcyNo'))} · "
+        f"{display_value(policy.get('lclsfNm'))} > "
+        f"{display_value(policy.get('mclsfNm'))}"
+    )
+
+    summary_col, support_col = st.columns(2, gap="large")
+    with summary_col:
+        st.markdown("#### 정책 설명")
+        st.write(display_value(policy.get("plcyExplnCn")))
+    with support_col:
+        st.markdown("#### 지원 내용")
+        st.write(display_value(policy.get("plcySprtCn")))
+
+    institution_col, application_col, age_col, income_col = st.columns(4)
+    institution_col.metric(
+        "주관 기관",
+        display_value(policy.get("sprvsnInstCdNm")),
+    )
+    application_col.metric(
+        "신청 기간",
+        display_value(policy.get("aplyYmd")),
+    )
+    age_col.metric(
+        "지원 연령",
+        (
+            f"{display_value(policy.get('sprtTrgtMinAge'))}"
+            f" ~ {display_value(policy.get('sprtTrgtMaxAge'))}세"
+        ),
+    )
+    income_col.metric(
+        "소득 조건",
+        display_value(policy.get("earnEtcCn")),
+    )
+
+    st.markdown("#### 신청 안내")
+    st.write(
+        f"**신청 방법:** "
+        f"{display_value(policy.get('plcyAplyMthdCn'))}"
+    )
+    st.write(
+        f"**참여 대상:** "
+        f"{display_value(policy.get('ptcpPrpTrgtCn'))}"
+    )
+    st.write(
+        f"**추가 자격 조건:** "
+        f"{display_value(policy.get('addAplyQlfcCndCn'))}"
+    )
+    st.write(
+        f"**제출 서류:** "
+        f"{display_value(policy.get('sbmsnDcmntCn'))}"
+    )
+
+    links = [
+        ("신청 페이지", policy.get("aplyUrlAddr")),
+        ("참고 링크 1", policy.get("refUrlAddr1")),
+        ("참고 링크 2", policy.get("refUrlAddr2")),
+    ]
+    available_links = [
+        f"[{label}]({url})"
+        for label, url in links
+        if isinstance(url, str) and url.strip()
+    ]
+    if available_links:
+        st.markdown(" · ".join(available_links))
+
+    with st.expander("전체 원본 정보", expanded=False):
+        st.json(policy)
+
+
+def render_policy_lookup() -> None:
+    st.subheader("정책 상세 조회")
+    st.caption("정책 ID로 원본 정책의 신청 기간, 지원 내용, 자격 조건을 조회합니다.")
+
+    with st.form("policy_lookup_form"):
+        policy_id = st.text_input(
+            "정책 ID",
+            key="policy_id_input",
+            placeholder="예: 20260618005400213241",
+        )
+        submitted = st.form_submit_button("정책 조회")
+
+    if submitted:
+        normalized_policy_id = policy_id.strip()
+        if not normalized_policy_id:
+            st.session_state.policy_detail = None
+            st.error("정책 ID를 입력하세요.")
+        else:
+            encoded_policy_id = quote(normalized_policy_id, safe="")
+            ok, data = request_json(
+                "GET",
+                f"/policies/{encoded_policy_id}",
+            )
+            if ok:
+                st.session_state.policy_detail = data
+            else:
+                st.session_state.policy_detail = None
+                st.error("정책 조회 실패")
+                st.json(data)
+
+    if st.session_state.policy_detail:
+        render_policy_detail(st.session_state.policy_detail)
+
+
 def render_chat() -> None:
     st.subheader("Streaming Chat")
 
     st.session_state.exclude_expired = st.checkbox(
-        "마감된 정책 제외",
+        "신청 마감된 정책 제외",
         value=st.session_state.exclude_expired,
-        help="끄면 정책 종료일이 지난 문서도 검색 후보에 포함합니다.",
+        help="끄면 신청 기간이 지난 정책도 검색 후보에 포함합니다.",
     )
 
     if st.button("Clear chat"):
@@ -262,11 +383,17 @@ def main() -> None:
         )
         st.code(f"{st.session_state.api_base_url.rstrip('/')}/docs")
 
-    left, right = st.columns([0.9, 1.1], gap="large")
-    with left:
-        render_user_form()
-    with right:
-        render_chat()
+    profile_chat_tab, policy_tab = st.tabs(
+        ["프로필 · 채팅", "정책 상세 조회"],
+    )
+    with profile_chat_tab:
+        left, right = st.columns([0.9, 1.1], gap="large")
+        with left:
+            render_user_form()
+        with right:
+            render_chat()
+    with policy_tab:
+        render_policy_lookup()
 
 
 if __name__ == "__main__":

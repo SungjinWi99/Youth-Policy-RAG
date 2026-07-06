@@ -1,5 +1,7 @@
 from typing import Optional
-from sqlmodel import SQLModel, Field
+from sqlmodel import SQLModel
+
+from policy.utils import RegionName
 
 
 class UserBase(SQLModel):
@@ -12,7 +14,8 @@ class UserBase(SQLModel):
 
 class UserCreate(UserBase):
     user_id: str
+    region: Optional[RegionName] = None
 
 
 class UserUpdate(UserBase):
-    pass
+    region: Optional[RegionName] = None

@@ -1,137 +1,315 @@
+import argparse
 import json
+import os
+import sys
 import time
-from tqdm import tqdm
+from pathlib import Path
+from typing import Any
+
+import chromadb
 from dotenv import load_dotenv
-from langchain_core.documents import Document
 from langchain_chroma import Chroma
-from src.config import load_config
+from langchain_core.documents import Document
+from tqdm import tqdm
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from src.factory import create_embedding_model
+from policy.utils import (
+    build_age_metadata,
+    build_application_period_metadata,
+    build_income_metadata,
+)
+from policy.utils import build_region_metadata
 
-BATCH_SIZE = 270
-TIME_SLEEP = 10
-load_dotenv()
-config = load_config()
 
-def to_int(value, default=0):
-  try:
-    value = str(value or "").strip()
-    return int(value) if value else default
-  except ValueError:
-    return default
+DEFAULT_RAW_PATH = PROJECT_ROOT / "data/raw/youth_policies.json"
+DEFAULT_COLLECTION_NAME = "youth_policies_rag"
+DEFAULT_BATCH_SIZE = 270
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
-def to_policy_end_date(value):
-  value = str(value or "").strip()
-  if len(value) == 8 and value.isdigit():
-    return int(value)
-  return 99991231
 
-def normalize_income_policy(item):
-  min_income = to_int(item.get("earnMinAmt"), 0)
-  max_income = to_int(item.get("earnMaxAmt"), 0)
-  if min_income == 0 and max_income == 0:
-    return "all"
-  return "specific"
+def project_path(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return (PROJECT_ROOT / path).resolve()
 
-def normalize_region_policy(item):
-  zip_codes = [
-      zip_code.strip()
-      for zip_code in str(item.get("zipCd") or "").split(",")
-      if zip_code.strip()
-  ]
 
-  if not zip_codes or len(zip_codes) >= 100:
-    return "all"
-  return item.get("rgtrInstCdNm") or "all"
+def to_policy_end_date(value: Any) -> int:
+    normalized = str(value or "").strip()
+    if len(normalized) == 8 and normalized.isdigit():
+        return int(normalized)
+    return 99991231
 
-def normalize_gender_policy(item):
-  text = " ".join([
-      str(item.get("plcyNm") or ""),
-      str(item.get("plcyKywdNm") or ""),
-      str(item.get("plcyExplnCn") or ""),
-      str(item.get("plcySprtCn") or ""),
-      str(item.get("addAplyQlfcCndCn") or ""),
-      str(item.get("ptcpPrpTrgtCn") or ""),
-  ])
 
-  female_terms = ["여성", "여자", "여대생", "경력단절여성"]
-  male_terms = ["남성", "남자", "남대생"]
+def load_raw_policies(path: Path) -> list[dict[str, Any]]:
+    with path.open(encoding="utf-8") as policy_file:
+        policies = json.load(policy_file)
+    if not isinstance(policies, list) or not policies:
+        raise ValueError(f"{path}에는 비어 있지 않은 JSON 배열이 필요합니다.")
 
-  has_female = any(term in text for term in female_terms)
-  has_male = any(term in text for term in male_terms)
+    policy_ids = []
+    for index, policy in enumerate(policies):
+        if not isinstance(policy, dict):
+            raise ValueError(f"{path}[{index}] 정책이 JSON 객체가 아닙니다.")
+        policy_id = str(policy.get("plcyNo") or "").strip()
+        if not policy_id:
+            raise ValueError(f"{path}[{index}]에 plcyNo가 없습니다.")
+        policy_ids.append(policy_id)
+    if len(policy_ids) != len(set(policy_ids)):
+        raise ValueError(f"{path}에 중복 plcyNo가 있습니다.")
+    return policies
 
-  if has_female and not has_male:
-    return "female"
-  if has_male and not has_female:
-    return "male"
-  return "all"
 
-def main():
-  with open(config.data.raw, "r", encoding="utf-8") as f:
-        raw_data = json.load(f)
+def build_documents(
+    policies: list[dict[str, Any]],
+) -> tuple[list[Document], list[str]]:
+    documents = []
+    ids = []
 
-  assert isinstance(raw_data, list)
+    for item in policies:
+        policy_id = str(item["plcyNo"]).strip()
+        content = f"""
+정책명: {item.get("plcyNm", "")}
+키워드: {item.get("plcyKywdNm", "")}
+카테고리: {item.get("lclsfNm", "")} > {item.get("mclsfNm", "")}
+정책 설명: {item.get("plcyExplnCn", "")}
+지원 내용: {item.get("plcySprtCn", "")}
+""".strip()
 
-  documents = []
-  ids = []
-  for item in raw_data:
-      content = f"""
-        정책명: {item.get('plcyNm', '')}
-        키워드: {item.get('plcyKywdNm', '')}
-        카테고리: {item.get('lclsfNm', '')} > {item.get('mclsfNm', '')}
-        정책 설명: {item.get('plcyExplnCn', '')}
-        지원 내용: {item.get('plcySprtCn', '')}
-        """
+        metadata = {
+            "plcyNo": policy_id,
+            "lclsfNm": str(item.get("lclsfNm") or ""),
+            "mclsfNm": str(item.get("mclsfNm") or ""),
+            "refUrlAddr1": str(item.get("refUrlAddr1") or ""),
+            "refUrlAddr2": str(item.get("refUrlAddr2") or ""),
+            "aplyUrlAddr": str(item.get("aplyUrlAddr") or ""),
+            "sprvsnInstCdNm": str(item.get("sprvsnInstCdNm") or ""),
+            "operInstCdNm": str(item.get("operInstCdNm") or ""),
+            "bizPrdBgngYmd": str(item.get("bizPrdBgngYmd") or ""),
+            "bizPrdEndYmd": to_policy_end_date(item.get("bizPrdEndYmd")),
+            "bizPrdEtcCn": str(item.get("bizPrdEtcCn") or ""),
+            "aplyYmd": str(item.get("aplyYmd") or ""),
+            "plcyAplyMthdCn": str(item.get("plcyAplyMthdCn") or ""),
+            "ptcpPrpTrgtCn": str(item.get("ptcpPrpTrgtCn") or ""),
+            "addAplyQlfcCndCn": str(
+                item.get("addAplyQlfcCndCn") or ""
+            ),
+            "sbmsnDcmntCn": str(item.get("sbmsnDcmntCn") or ""),
+            "srngMthdCn": str(item.get("srngMthdCn") or ""),
+            "region": str(item.get("rgtrInstCdNm") or ""),
+            "zipCd": str(item.get("zipCd") or ""),
+            "jobCd": str(item.get("jobCd") or ""),
+            "mrgSttsCd": str(item.get("mrgSttsCd") or ""),
+        }
+        metadata.update(
+            build_age_metadata(
+                item.get("sprtTrgtMinAge"),
+                item.get("sprtTrgtMaxAge"),
+            )
+        )
+        metadata.update(
+            build_income_metadata(
+                item.get("earnMinAmt"),
+                item.get("earnMaxAmt"),
+            )
+        )
+        metadata.update(
+            build_application_period_metadata(
+                item.get("aplyYmd"),
+                item.get("aplyPrdSeCd"),
+            )
+        )
+        metadata.update(build_region_metadata(item.get("zipCd")))
 
-      metadata = {
-          "plcyNo": item.get("plcyNo"),  # 정책 고유 번호
-          "lclsfNm": item.get("lclsfNm"),  # 정책 대분류명
-          "mclsfNm": item.get("mclsfNm"),  # 정책 중분류명
-          "refUrlAddr1": item.get("refUrlAddr1"),  # 정책 참고 URL 1
-          "refUrlAddr2": item.get("refUrlAddr2") or "",  # 정책 참고 URL 2
-          "aplyUrlAddr": item.get("aplyUrlAddr") or "",  # 정책 신청 URL
-          "sprvsnInstCdNm": item.get("sprvsnInstCdNm"),  # 정책 주관 기관명
-          "operInstCdNm": item.get("operInstCdNm") or "",  # 정책 운영 기관명
-          "sprtTrgtMinAge": to_int(item.get("sprtTrgtMinAge"), 0),  # 지원 대상 최소 연령
-          "sprtTrgtMaxAge": to_int(item.get("sprtTrgtMaxAge"), 99),  # 지원 대상 최대 연령
-          "earnMinAmt": to_int(item.get("earnMinAmt"), 0),  # 소득 조건 최소 금액
-          "earnMaxAmt": to_int(item.get("earnMaxAmt"), 0),  # 소득 조건 최대 금액
-          "incomePolicy": normalize_income_policy(item),  # 소득 필터용 정규화 값
-          "bizPrdBgngYmd": item.get("bizPrdBgngYmd") or "",  # 사업 기간 시작일
-          "bizPrdEndYmd": to_policy_end_date(item.get("bizPrdEndYmd")),  # 사업 기간 종료일
-          "bizPrdEtcCn": item.get("bizPrdEtcCn") or "",  # 사업 기간 기타 설명
-          "aplyYmd": item.get("aplyYmd") or "",  # 신청 기간
-          "plcyAplyMthdCn": item.get("plcyAplyMthdCn") or "",  # 정책 신청 방법
-          "ptcpPrpTrgtCn": item.get("ptcpPrpTrgtCn") or "",  # 참여 제안 대상 설명
-          "addAplyQlfcCndCn": item.get("addAplyQlfcCndCn") or "",  # 추가 신청 자격 조건
-          "sbmsnDcmntCn": item.get("sbmsnDcmntCn") or "",  # 제출 서류
-          "srngMthdCn": item.get("srngMthdCn") or "",  # 심사 방법
-          "region": item.get("rgtrInstCdNm") or "",  # 정책 등록 기관명
-          "regionPolicy": normalize_region_policy(item),  # 지역 필터용 정규화 값
-          "zipCd": item.get("zipCd") or "",  # 정책 적용 지역 우편번호/행정구역 코드 목록
-          "jobCd": item.get("jobCd") or "",  # 참여 대상 직업 코드
-          "genderPolicy": normalize_gender_policy(item),  # 성별 필터용 정규화 값
-          "mrgSttsCd": item.get("mrgSttsCd") or "",  # 혼인 상태 코드
-      }
+        documents.append(
+            Document(
+                page_content=content,
+                metadata=metadata,
+            )
+        )
+        ids.append(policy_id)
 
-      doc = Document(page_content=content.strip(), metadata=metadata)
-      documents.append(doc)
-      ids.append(item.get("plcyNo"))
+    return documents, ids
 
-  embedding_model = create_embedding_model(
-      provider=config.retriever.provider,
-      model_name=config.retriever.passage_model,
-  )
-  vector_store = Chroma(
-        collection_name=config.data.chroma_collection_name,
-        embedding_function=embedding_model,
-        persist_directory=config.path(config.data.chroma_dir)
+
+def create_passage_embedding_model(
+    provider: str,
+    model_name: str,
+    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
+):
+    kwargs = {}
+    if provider == "ollama":
+        kwargs["base_url"] = ollama_base_url
+    return create_embedding_model(
+        provider=provider,
+        model_name=model_name,
+        **kwargs,
     )
-  for i in tqdm(range(0, len(documents), BATCH_SIZE), desc="데이터 적재 중..."):
-    batch_docs = documents[i : i + BATCH_SIZE]
-    batch_ids = ids[i : i + BATCH_SIZE]
-    vector_store.add_documents(documents=batch_docs, ids=batch_ids)
-    if i + BATCH_SIZE < len(documents):
-      time.sleep(TIME_SLEEP)
 
-if __name__ == '__main__':
-  main()
+
+def prepare_vector_store(
+    chroma_dir: Path,
+    collection_name: str,
+    embedding_model: Any,
+    distance_metric: str,
+    recreate: bool,
+) -> Chroma:
+    chroma_dir.mkdir(parents=True, exist_ok=True)
+    client = chromadb.PersistentClient(path=str(chroma_dir))
+    existing_names = {
+        collection.name
+        for collection in client.list_collections()
+    }
+    if collection_name in existing_names:
+        if not recreate:
+            raise FileExistsError(
+                f"{chroma_dir}에 collection '{collection_name}'이 이미 "
+                "존재합니다. 다시 만들려면 --recreate를 사용하세요."
+            )
+        client.delete_collection(collection_name)
+
+    return Chroma(
+        collection_name=collection_name,
+        embedding_function=embedding_model,
+        persist_directory=str(chroma_dir),
+        collection_metadata={"hnsw:space": distance_metric},
+    )
+
+
+def ingest_documents(
+    vector_store: Chroma,
+    documents: list[Document],
+    ids: list[str],
+    batch_size: int,
+    sleep_seconds: float,
+) -> None:
+    for start in tqdm(
+        range(0, len(documents), batch_size),
+        desc="Chroma 적재",
+    ):
+        end = start + batch_size
+        vector_store.add_documents(
+            documents=documents[start:end],
+            ids=ids[start:end],
+        )
+        if end < len(documents) and sleep_seconds > 0:
+            time.sleep(sleep_seconds)
+
+
+def parse_args(
+    argv: list[str] | None = None,
+) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "config.yaml과 무관하게 provider/model/path를 지정해 "
+            "청년정책 ChromaDB를 생성합니다."
+        )
+    )
+    parser.add_argument(
+        "--provider",
+        required=True,
+        choices=("google", "ollama", "openai", "upstage"),
+    )
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="문서 적재용 passage embedding 모델명",
+    )
+    parser.add_argument(
+        "--chroma-dir",
+        type=Path,
+        required=True,
+        help="생성할 ChromaDB 디렉터리",
+    )
+    parser.add_argument(
+        "--collection",
+        default=DEFAULT_COLLECTION_NAME,
+    )
+    parser.add_argument(
+        "--raw-path",
+        type=Path,
+        default=DEFAULT_RAW_PATH,
+    )
+    parser.add_argument(
+        "--distance-metric",
+        choices=("cosine", "l2", "ip"),
+        default="cosine",
+        help="세 실험에서 같은 값을 사용해야 합니다(기본값: cosine)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_BATCH_SIZE,
+    )
+    parser.add_argument(
+        "--sleep-seconds",
+        type=float,
+        default=0.0,
+        help="API rate limit 대응을 위한 batch 사이 대기 시간",
+    )
+    parser.add_argument(
+        "--ollama-base-url",
+        default=DEFAULT_OLLAMA_BASE_URL,
+    )
+    parser.add_argument(
+        "--recreate",
+        action="store_true",
+        help="동일 경로의 동일 collection을 삭제하고 다시 생성",
+    )
+    args = parser.parse_args(argv)
+    if args.batch_size < 1:
+        parser.error("--batch-size는 1 이상이어야 합니다.")
+    if args.sleep_seconds < 0:
+        parser.error("--sleep-seconds는 0 이상이어야 합니다.")
+    return args
+
+
+def main() -> None:
+    args = parse_args()
+    load_dotenv()
+    os.environ["LANGSMITH_TRACING"] = "false"
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+
+    raw_path = project_path(args.raw_path)
+    chroma_dir = project_path(args.chroma_dir)
+    policies = load_raw_policies(raw_path)
+    documents, ids = build_documents(policies)
+    embedding_model = create_passage_embedding_model(
+        provider=args.provider,
+        model_name=args.model,
+        ollama_base_url=args.ollama_base_url,
+    )
+    vector_store = prepare_vector_store(
+        chroma_dir=chroma_dir,
+        collection_name=args.collection,
+        embedding_model=embedding_model,
+        distance_metric=args.distance_metric,
+        recreate=args.recreate,
+    )
+    ingest_documents(
+        vector_store=vector_store,
+        documents=documents,
+        ids=ids,
+        batch_size=args.batch_size,
+        sleep_seconds=args.sleep_seconds,
+    )
+
+    stored_count = vector_store._collection.count()
+    if stored_count != len(documents):
+        raise RuntimeError(
+            f"적재 건수가 일치하지 않습니다: expected={len(documents)}, "
+            f"stored={stored_count}"
+        )
+    print(
+        f"Chroma ready: provider={args.provider}, model={args.model}, "
+        f"path={chroma_dir}, collection={args.collection}, "
+        f"metric={args.distance_metric}, count={stored_count}"
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -32,9 +32,23 @@ def format_context_range(start, end, unit: str = "") -> str:
 def format_income_condition(metadata: dict) -> str:
     if metadata.get("incomePolicy") == "all":
         return "제한 없음"
+    if metadata.get("incomePolicy") == "unknown":
+        return "확인 필요"
     return format_context_range(
         metadata.get("earnMinAmt"),
         metadata.get("earnMaxAmt"),
+    )
+
+
+def format_age_condition(metadata: dict) -> str:
+    if metadata.get("agePolicy") == "all":
+        return "제한 없음"
+    if metadata.get("agePolicy") == "unknown":
+        return "확인 필요"
+    return format_context_range(
+        metadata.get("sprtTrgtMinAge"),
+        metadata.get("sprtTrgtMaxAge"),
+        "세",
     )
 
 
@@ -58,7 +72,7 @@ def format_doc(doc: Document, index: int) -> str:
 주관기관: {format_context_value(metadata.get("sprvsnInstCdNm"))}
 운영기관: {format_context_value(metadata.get("operInstCdNm"))}
 지역: {format_context_value(metadata.get("region"))}
-지원 연령: {format_context_range(metadata.get("sprtTrgtMinAge"), metadata.get("sprtTrgtMaxAge"), "세")}
+지원 연령: {format_age_condition(metadata)}
 소득 조건: {format_income_condition(metadata)}
 사업 기간: {format_context_range(metadata.get("bizPrdBgngYmd"), metadata.get("bizPrdEndYmd"))}
 사업 기간 기타 설명: {format_context_value(metadata.get("bizPrdEtcCn"))}

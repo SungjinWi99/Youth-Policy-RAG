@@ -13,6 +13,7 @@
 - 사용자 ID별 SQLite 대화 기록 및 연속 대화
 - FastAPI SSE 스트리밍 응답
 - SQLite 기반 사용자 프로필 CRUD
+- 정책 ID 기반 원본 정책 상세 조회 API
 - Streamlit 기반 API 테스트 화면
 - LangSmith Dataset과 evaluator를 이용한 RAG 품질 평가
 
@@ -58,6 +59,7 @@ flowchart LR
 ├── src/
 │   ├── chat/
 │   │   └── router.py              # chat API
+│   ├── policies/                   # 정책 상세 조회 모델과 API
 │   ├── rag/
 │   │   ├── graph.py               # LangGraph workflow와 public API
 │   │   ├── retriever.py           # 사용자 조건 기반 정책 검색
@@ -212,6 +214,7 @@ streamlit run demo_streamlit.py --server.port 8501
 | `GET` | `/user/{user_id}` | 사용자 프로필 조회 |
 | `POST` | `/user/{user_id}` | 사용자 프로필 수정 |
 | `DELETE` | `/user/{user_id}` | 사용자 프로필 삭제 |
+| `GET` | `/policies/{policy_id}` | 정책 상세 정보 조회 |
 | `POST` | `/chat` | 사용자 프로필 기반 정책 검색 및 SSE 답변 |
 
 사용자 등록 예시:

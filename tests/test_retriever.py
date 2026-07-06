@@ -21,18 +21,48 @@ class RetrieverTest(unittest.TestCase):
             result,
             {
                 "$and": [
-                    {"sprtTrgtMinAge": {"$lte": 25}},
-                    {"sprtTrgtMaxAge": {"$gte": 25}},
                     {
-                        "genderPolicy": {
-                            "$in": ["all", "female"]
-                        }
+                        "$or": [
+                            {
+                                "agePolicy": {
+                                    "$in": ["all", "unknown"]
+                                }
+                            },
+                            {
+                                "$and": [
+                                    {
+                                        "agePolicy": {
+                                            "$eq": "specific"
+                                        }
+                                    },
+                                    {
+                                        "sprtTrgtMinAge": {
+                                            "$lte": 25
+                                        }
+                                    },
+                                    {
+                                        "sprtTrgtMaxAge": {
+                                            "$gte": 25
+                                        }
+                                    },
+                                ]
+                            },
+                        ]
                     },
                     {
                         "$or": [
-                            {"incomePolicy": {"$eq": "all"}},
+                            {
+                                "incomePolicy": {
+                                    "$in": ["all", "unknown"]
+                                }
+                            },
                             {
                                 "$and": [
+                                    {
+                                        "incomePolicy": {
+                                            "$eq": "specific"
+                                        }
+                                    },
                                     {"earnMinAmt": {"$lte": 3000}},
                                     {"earnMaxAmt": {"$gte": 3000}},
                                 ]
@@ -40,18 +70,61 @@ class RetrieverTest(unittest.TestCase):
                         ]
                     },
                     {
-                        "regionPolicy": {
-                            "$in": ["all", "서울"]
-                        }
+                        "region_11": {"$eq": True}
                     },
                     {
-                        "bizPrdEndYmd": {
-                            "$gte": 20260701
-                        }
+                        "$or": [
+                            {
+                                "applicationPolicy": {
+                                    "$in": ["rolling", "unknown"]
+                                }
+                            },
+                            {
+                                "$and": [
+                                    {
+                                        "applicationPolicy": {
+                                            "$in": ["fixed", "multi"]
+                                        }
+                                    },
+                                    {
+                                        "applicationEndYmd": {
+                                            "$gte": 20260701
+                                        }
+                                    },
+                                ]
+                            },
+                        ]
                     },
                 ]
             },
         )
+
+    def test_gender_does_not_create_metadata_filter(self):
+        result = build_user_filter(
+            {"gender": "여성"},
+            exclude_expired=False,
+            today_yyyymmdd=20260701,
+        )
+
+        self.assertIsNone(result)
+
+    def test_build_user_filter_normalizes_legacy_region_name(self):
+        result = build_user_filter(
+            {"region": "충청북도"},
+            exclude_expired=False,
+            today_yyyymmdd=20260701,
+        )
+
+        self.assertEqual(result, {"region_43": {"$eq": True}})
+
+    def test_build_user_filter_ignores_unknown_legacy_region(self):
+        result = build_user_filter(
+            {"region": "알 수 없는 지역"},
+            exclude_expired=False,
+            today_yyyymmdd=20260701,
+        )
+
+        self.assertIsNone(result)
 
     def test_build_user_filter_returns_none_without_conditions(self):
         self.assertIsNone(
@@ -81,7 +154,29 @@ class RetrieverTest(unittest.TestCase):
 
         self.assertEqual(
             result,
-            {"bizPrdEndYmd": {"$gte": 20260701}},
+            {
+                "$or": [
+                    {
+                        "applicationPolicy": {
+                            "$in": ["rolling", "unknown"]
+                        }
+                    },
+                    {
+                        "$and": [
+                            {
+                                "applicationPolicy": {
+                                    "$in": ["fixed", "multi"]
+                                }
+                            },
+                            {
+                                "applicationEndYmd": {
+                                    "$gte": 20260701
+                                }
+                            },
+                        ]
+                    },
+                ]
+            },
         )
         self.assertEqual(provider_calls, [])
 

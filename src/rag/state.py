@@ -5,6 +5,8 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
 
+from src.rag.router import RouteName, RoutingDecision
+
 
 class RAGResult(BaseModel):
     answer: str
@@ -36,3 +38,19 @@ class RAGGraphState(RAGGraphInput, total=False):
 class RAGGraphOutput(TypedDict):
     documents: list[Document]
     answer: str
+
+
+class RoutingGraphInput(TypedDict):
+    current_question: str
+    documents: list[Document]
+
+
+class RoutingGraphState(RoutingGraphInput, total=False):
+    routing_decision: RoutingDecision
+    executed_route: RouteName
+
+
+class RoutingGraphOutput(TypedDict):
+    documents: list[Document]
+    routing_decision: RoutingDecision
+    executed_route: RouteName

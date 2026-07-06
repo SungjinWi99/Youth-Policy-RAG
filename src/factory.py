@@ -5,7 +5,8 @@ from langchain_google_genai import (
 )
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_upstage import ChatUpstage, UpstageEmbeddings
-
+from langchain_anthropic import ChatAnthropic
+from langchain_ollama import ChatOllama, OllamaEmbeddings
 from src.checkpoint import create_sqlite_checkpointer
 from src.config import AppConfig
 from src.rag.generator import AnswerGenerator
@@ -18,12 +19,15 @@ CHAT_MODEL_CLASSES = {
     "google": ChatGoogleGenerativeAI,
     "openai": ChatOpenAI,
     "upstage": ChatUpstage,
+    "anthropic": ChatAnthropic,
+    "ollama": ChatOllama
 }
 
 EMBEDDING_MODEL_CLASSES = {
     "google": GoogleGenerativeAIEmbeddings,
     "openai": OpenAIEmbeddings,
     "upstage": UpstageEmbeddings,
+    "ollama": OllamaEmbeddings
 }
 
 

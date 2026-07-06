@@ -5,21 +5,7 @@ from typing import Any
 from langchain_core.documents import Document
 
 from src.rag.state import PolicySearchProfile
-
-
-def normalize_user_gender(gender: str | None) -> str | None:
-    if not gender:
-        return None
-
-    value = gender.strip().lower()
-
-    if value in {"female", "woman", "women", "f", "여성", "여자"}:
-        return "female"
-
-    if value in {"male", "man", "men", "m", "남성", "남자"}:
-        return "male"
-
-    return None
+from src.policy.utils import region_metadata_key, region_name_to_code
 
 
 def build_user_filter(
@@ -31,24 +17,31 @@ def build_user_filter(
     filters: list[dict] = []
     age = user.get("age")
     if age is not None:
-        filters.extend([
-            {"sprtTrgtMinAge": {"$lte": age}},
-            {"sprtTrgtMaxAge": {"$gte": age}},
-        ])
-
-    gender = normalize_user_gender(user.get("gender"))
-    if gender:
         filters.append({
-            "genderPolicy": {"$in": ["all", gender]}
+            "$or": [
+                {"agePolicy": {"$in": ["all", "unknown"]}},
+                {
+                    "$and": [
+                        {"agePolicy": {"$eq": "specific"}},
+                        {"sprtTrgtMinAge": {"$lte": age}},
+                        {"sprtTrgtMaxAge": {"$gte": age}},
+                    ]
+                },
+            ]
         })
 
     income = user.get("income")
     if income is not None:
         filters.append({
             "$or": [
-                {"incomePolicy": {"$eq": "all"}},
+                {
+                    "incomePolicy": {
+                        "$in": ["all", "unknown"]
+                    }
+                },
                 {
                     "$and": [
+                        {"incomePolicy": {"$eq": "specific"}},
                         {"earnMinAmt": {"$lte": income}},
                         {"earnMaxAmt": {"$gte": income}},
                     ]
@@ -56,15 +49,35 @@ def build_user_filter(
             ]
         })
 
-    region = user.get("region")
-    if region:
+    region_code = region_name_to_code(user.get("region"))
+    if region_code:
         filters.append({
-            "regionPolicy": {"$in": ["all", region]}
+            region_metadata_key(region_code): {"$eq": True}
         })
 
     if exclude_expired:
         filters.append({
-            "bizPrdEndYmd": {"$gte": today_yyyymmdd}
+            "$or": [
+                {
+                    "applicationPolicy": {
+                        "$in": ["rolling", "unknown"]
+                    }
+                },
+                {
+                    "$and": [
+                        {
+                            "applicationPolicy": {
+                                "$in": ["fixed", "multi"]
+                            }
+                        },
+                        {
+                            "applicationEndYmd": {
+                                "$gte": today_yyyymmdd
+                            }
+                        },
+                    ]
+                },
+            ]
         })
 
     if not filters:

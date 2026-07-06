@@ -14,7 +14,7 @@ class DataConfig(BaseModel):
   chroma_collection_name: str
 
 class RetrieverConfig(BaseModel):
-  provider: Literal['google', 'openai', 'upstage']
+  provider: Literal['google', 'openai', 'upstage', 'ollama']
   query_model: str
   passage_model: str
   search_k: int

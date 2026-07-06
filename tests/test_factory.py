@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from pydantic import ValidationError
 
-from src.config import EvaluationConfig, LLMConfig
+from src.config import EvaluationConfig, LLMConfig, RetrieverConfig
 from src.factory import (
     CHAT_MODEL_CLASSES,
     EMBEDDING_MODEL_CLASSES,
@@ -21,6 +21,16 @@ class FakeModel:
 
 
 class FactoryTest(unittest.TestCase):
+    def test_retriever_config_accepts_ollama(self):
+        config = RetrieverConfig(
+            provider="ollama",
+            query_model="bge-m3",
+            passage_model="bge-m3",
+            search_k=3,
+        )
+
+        self.assertEqual(config.provider, "ollama")
+
     def test_evaluation_concurrency_must_be_positive(self):
         with self.assertRaises(ValidationError):
             EvaluationConfig(

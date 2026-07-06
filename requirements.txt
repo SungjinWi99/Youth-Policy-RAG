@@ -2,6 +2,7 @@ fastapi>=0.115.0
 langchain-chroma>=1.0.0
 langchain-core>=1.0.0
 langchain-google-genai>=4.0.0
+langchain-ollama>=1.0.0
 langchain-openai>=1.0.0
 langchain-upstage>=0.7.0
 langgraph>=1.1.0
