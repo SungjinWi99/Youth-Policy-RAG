@@ -1,7 +1,7 @@
 from typing import Optional
 from sqlmodel import SQLModel
 
-from policy.utils import RegionName
+from src.policy.utils import RegionName
 
 
 class UserBase(SQLModel):

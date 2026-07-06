@@ -2,7 +2,7 @@ from collections.abc import Sequence
 
 from langchain_core.documents import Document
 
-from src.rag.state import PolicySearchProfile
+from src.rag.state import RAGUserProfile
 
 
 def format_optional(value) -> str:
@@ -52,7 +52,7 @@ def format_age_condition(metadata: dict) -> str:
     )
 
 
-def format_user_profile(user: PolicySearchProfile) -> str:
+def format_user_profile(user: RAGUserProfile) -> str:
     return "\n".join([
         f"나이: {format_optional(user.get('age'))}",
         f"성별: {format_optional(user.get('gender'))}",
@@ -66,6 +66,9 @@ def format_doc(doc: Document, index: int) -> str:
     metadata = doc.metadata
     return f"""
 [검색 결과 {index}]
+검색 문서:
+{doc.page_content}
+
 정책번호: {format_context_value(metadata.get("plcyNo"))}
 대분류: {format_context_value(metadata.get("lclsfNm"))}
 중분류: {format_context_value(metadata.get("mclsfNm"))}
@@ -87,9 +90,6 @@ def format_doc(doc: Document, index: int) -> str:
 심사 방법: {format_context_value(metadata.get("srngMthdCn"))}
 직업 코드: {format_context_value(metadata.get("jobCd"))}
 혼인 상태 코드: {format_context_value(metadata.get("mrgSttsCd"))}
-
-검색 문서:
-{doc.page_content}
 """.strip()
 
 

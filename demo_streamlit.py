@@ -6,7 +6,7 @@ from urllib.parse import quote
 import requests
 import streamlit as st
 
-from policy.utils import REGION_NAMES
+from src.policy.utils import REGION_NAMES
 
 
 DEFAULT_API_BASE_URL = os.getenv("YOUTH_RAG_API_URL", "http://127.0.0.1:8000")
@@ -295,7 +295,19 @@ def render_chat() -> None:
     )
 
     if st.button("Clear chat"):
+        user_id = st.session_state.active_user_id.strip()
+        if user_id:
+            encoded_user_id = quote(user_id, safe="")
+            ok, data = request_json(
+                "DELETE",
+                f"/chat/{encoded_user_id}",
+            )
+            if not ok:
+                st.error("서버 대화 기록 삭제 실패")
+                st.json(data)
+                return
         st.session_state.messages = []
+        st.success("대화 기록을 삭제했습니다.")
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):

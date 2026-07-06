@@ -1,7 +1,7 @@
 from fastapi import Depends, APIRouter, HTTPException
 from sqlmodel import Session
 
-from src.rag.graph import RAGGraph
+from src.rag.graph import PolicyRagGraph
 from src.user.models import UserProfile
 from src.user.schemas import UserCreate, UserUpdate
 from src.dependencies import get_db, get_rag_graph
@@ -24,7 +24,7 @@ def update_user_profile(user_id: str, user_data: UserUpdate, db: Session = Depen
 def delete_user_profile(
     user_id: str,
     db: Session = Depends(get_db),
-    rag: RAGGraph = Depends(get_rag_graph),
+    rag: PolicyRagGraph = Depends(get_rag_graph),
 ):
   result = UserProfile.delete(user_id, db)
   rag.delete_conversation(user_id)

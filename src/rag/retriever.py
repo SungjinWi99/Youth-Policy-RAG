@@ -4,12 +4,12 @@ from typing import Any
 
 from langchain_core.documents import Document
 
-from src.rag.state import PolicySearchProfile
+from src.rag.state import RAGUserProfile
 from src.policy.utils import region_metadata_key, region_name_to_code
 
 
 def build_user_filter(
-    user: PolicySearchProfile,
+    user: RAGUserProfile,
     *,
     exclude_expired: bool,
     today_yyyymmdd: int,
@@ -119,7 +119,7 @@ class PolicyRetriever:
 
     def _build_filter(
         self,
-        user_profile: PolicySearchProfile,
+        user_profile: RAGUserProfile,
         exclude_expired: bool,
         *,
         today: date | None = None,
@@ -142,7 +142,7 @@ class PolicyRetriever:
     def retrieve(
         self,
         query: str,
-        user_profile: PolicySearchProfile,
+        user_profile: RAGUserProfile,
         exclude_expired: bool = True,
     ) -> list[Document]:
         metadata_filter = self._build_filter(
@@ -156,7 +156,7 @@ class PolicyRetriever:
     async def aretrieve(
         self,
         query: str,
-        user_profile: PolicySearchProfile,
+        user_profile: RAGUserProfile,
         exclude_expired: bool = True,
     ) -> list[Document]:
         metadata_filter = self._build_filter(

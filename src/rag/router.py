@@ -1,80 +1,90 @@
 from collections.abc import Sequence
-from typing import Any, Literal, Protocol
-
-from langchain_core.documents import Document
-from langchain_core.prompts import ChatPromptTemplate
+from typing import Literal
 from pydantic import BaseModel, Field
 
+from langchain_core.language_models import BaseChatModel
+from langchain_core.documents import Document
+from langchain_core.messages import BaseMessage
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+from src.rag.utils.formatting import format_docs
 from src.rag.prompts import ROUTER_SYSTEM_PROMPT, ROUTER_USER_PROMPT
 
 
-RouteName = Literal["reuse", "search", "clarify"]
+class RouterOutput(BaseModel):
+  route: Literal['retriever', 'agent'] = Field(
+     description=(
+        "다음 실행 분기."
+        "'agent'는 현재 활성 정책 문서만으로 현재 질문에 답변이 가능한 경우"
+        "'retriever'는 새 정책 검색이 필요하거나 현재 활성 문서가 없거나 부족한 경우."
+        )
+  )
+  route_reason: str = Field(
+     description=(
+        "분기 결정 이유. 현재 사용자 질문과 현재 활성 정책 문서의 관계를 기준으로"
+        "1문장으로 간결하게 작성"
+     )
+  )
 
 
-class RoutingDecision(BaseModel):
-    route: RouteName = Field(
-        description="reuse, search, clarify 중 선택한 경로",
-    )
-    reason: str = Field(
-        min_length=1,
-        description="현재 질문과 활성 문서를 근거로 한 한 문장 판단 이유",
-    )
+class PolicyRouter:
+  def __init__(self, llm: BaseChatModel):
+    self.llm = llm.with_structured_output(RouterOutput)
+    self.prompt = ChatPromptTemplate.from_messages([
+       ("system", ROUTER_SYSTEM_PROMPT),
+       MessagesPlaceholder("chat_history", optional=True),
+       ("human", ROUTER_USER_PROMPT)
+    ])
+    self.chain = self.prompt | self.llm
 
 
-class ContextRouter(Protocol):
-    def decide(
-        self,
-        *,
-        current_question: str,
-        documents: list[Document],
-    ) -> RoutingDecision:
-        """현재 질문과 활성 문서의 관계를 분류한다."""
-        ...
+  def _build_chain_input(self,
+                         *,
+                         current_question: str,
+                         documents: Sequence[Document] | None = None,
+                         chat_history: Sequence[BaseMessage] | None = None
+                         ) -> dict:
+     return {
+        "documents": format_docs(documents) if documents else [],
+        "current_question": current_question,
+        "chat_history": list(chat_history or [])
+     }
 
 
-def format_routing_documents(
-    documents: Sequence[Document],
-    *,
-    max_content_chars: int = 1500,
-) -> str:
+  def decide(self,
+               *,
+               current_question: str,
+               documents: Sequence[Document],
+               chat_history: Sequence[BaseMessage] | None = None
+               ) -> RouterOutput:
+
+      if not documents:
+         return RouterOutput(
+            route="retriever",
+            route_reason="documents가 비어있습니다: 강제 Retrieval 진행"
+         )
+      chain_input = self._build_chain_input(
+       current_question = current_question,
+       documents = documents,
+       chat_history = chat_history
+     )
+      return self.chain.invoke(chain_input)
+
+  async def adecide(self,
+                *,
+                current_question: str,
+                documents: Sequence[Document],
+                chat_history: Sequence[BaseMessage] | None = None
+                ) -> RouterOutput:
     if not documents:
-        return "(활성 정책 문서 없음)"
+         return RouterOutput(
+            route="retriever",
+            route_reason="documents가 비어있습니다: 강제 Retrieval 진행"
+         )
 
-    formatted = []
-    for index, document in enumerate(documents, start=1):
-        policy_id = str(
-            document.metadata.get("plcyNo") or "미제공"
-        )
-        content = document.page_content.strip()
-        if len(content) > max_content_chars:
-            content = f"{content[:max_content_chars].rstrip()}…"
-        formatted.append(
-            f"[활성 정책 {index}]\n"
-            f"정책번호: {policy_id}\n"
-            f"{content}"
-        )
-    return "\n\n---\n\n".join(formatted)
-
-
-class LLMContextRouter:
-    def __init__(self, llm: Any):
-        self.prompt = ChatPromptTemplate.from_messages([
-            ("system", ROUTER_SYSTEM_PROMPT),
-            ("human", ROUTER_USER_PROMPT),
-        ])
-        self.chain = (
-            self.prompt
-            | llm.with_structured_output(RoutingDecision)
-        )
-
-    def decide(
-        self,
-        *,
-        current_question: str,
-        documents: list[Document],
-    ) -> RoutingDecision:
-        result = self.chain.invoke({
-            "current_question": current_question,
-            "documents": format_routing_documents(documents),
-        })
-        return RoutingDecision.model_validate(result)
+    chain_input = self._build_chain_input(
+       current_question = current_question,
+       documents = documents,
+       chat_history = chat_history
+     )
+    return await self.chain.ainvoke(chain_input)

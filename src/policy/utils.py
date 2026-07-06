@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from typing import Any, Liter, Literal, get_args
+from typing import Any, Literal, get_args
 
 
 ROLLING_APPLICATION_PERIOD_CODE = "0057002"
@@ -138,6 +138,8 @@ RegionName = Literal[
     "강원",
     "전북",
 ]
+
+REGION_NAMES: tuple[RegionName, ...] = get_args(RegionName)
 
 REGION_NAME_TO_CODE = {
     "서울": "11",
