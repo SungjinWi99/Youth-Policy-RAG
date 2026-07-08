@@ -1,6 +1,7 @@
 from fastapi import Depends, APIRouter, HTTPException
 from sqlmodel import Session
 
+from src.chat.models import ConversationThread
 from src.rag.graph import PolicyRagGraph
 from src.user.models import UserProfile
 from src.user.schemas import UserCreate, UserUpdate
@@ -26,6 +27,9 @@ def delete_user_profile(
     db: Session = Depends(get_db),
     rag: PolicyRagGraph = Depends(get_rag_graph),
 ):
+  thread_id = ConversationThread.delete_for_user(user_id, db)
   result = UserProfile.delete(user_id, db)
-  rag.delete_conversation(user_id)
+  rag.delete_conversation(thread_id)
+  if thread_id != user_id:
+    rag.delete_conversation(user_id)
   return result

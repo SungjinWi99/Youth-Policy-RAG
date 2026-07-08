@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from src.rag.graph import PolicyRagGraph
-from src.rag.router import RouterOutput
+from rag.nodes.router import RouterOutput
 
 
 class FakeRouter:

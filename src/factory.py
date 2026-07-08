@@ -10,9 +10,9 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from src.checkpointer import create_sqlite_checkpointer
 from src.config import AppConfig
 from src.rag.graph import PolicyRagGraph
-from src.rag.retriever import PolicyRetriever
-from src.rag.agent import PolicyAgent
-from src.rag.router import PolicyRouter
+from src.rag.nodes.retriever import PolicyRetriever
+from src.rag.nodes.agent import PolicyAgent
+from src.rag.nodes.router import PolicyRouter
 
 
 CHAT_MODEL_CLASSES = {
@@ -69,7 +69,6 @@ def build_rag_graph(config: AppConfig) -> PolicyRagGraph:
         vector_store=vector_store,
         search_k=config.retriever.search_k,
     )
-
 
     llm = create_chat_model(
         provider=config.llm.provider,

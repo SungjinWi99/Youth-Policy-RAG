@@ -2,7 +2,9 @@ from pathlib import Path
 
 from sqlmodel import SQLModel, Session, create_engine
 
+from src.chat.models import ConversationThread  # noqa: F401
 from src.config import load_config
+from src.user.models import UserProfile  # noqa: F401
 
 
 config = load_config()

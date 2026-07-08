@@ -20,12 +20,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.factory import create_embedding_model
-from src.rag.retriever import build_user_filter
-from policy.utils import REGION_CODES, region_metadata_key
+from src.rag.nodes.retriever import build_user_filter
+from src.policy.utils import REGION_CODES, region_metadata_key
 
 
 DEFAULT_DATASET_PATH = (
-    PROJECT_ROOT / "data/eval/retrieval_single_turnv3_300.jsonl"
+    PROJECT_ROOT / "data/eval/eval_v1_500.jsonl"
 )
 DEFAULT_RAW_POLICY_PATH = PROJECT_ROOT / "data/raw/youth_policies.json"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data/eval/embedding_retrieval_results"
@@ -49,12 +49,11 @@ REQUIRED_FILTER_METADATA_KEYS = {
 
 
 class RetrievalEvaluationCase(BaseModel):
-    gold_policy_ids: list[str] = Field(min_length=1)
+    expected_policy_ids: list[str] = Field(min_length=1)
     user_input: str = Field(min_length=1)
     user_profile: dict[str, Any] = Field(default_factory=dict)
-    hard_negative_ids: list[str] = Field(default_factory=list)
 
-    @field_validator("gold_policy_ids", "hard_negative_ids")
+    @field_validator("expected_policy_ids")
     @classmethod
     def reject_blank_or_duplicate_ids(cls, values: list[str]) -> list[str]:
         if any(not value.strip() for value in values):
@@ -62,6 +61,10 @@ class RetrievalEvaluationCase(BaseModel):
         if len(values) != len(set(values)):
             raise ValueError("정책 ID 목록에 중복을 사용할 수 없습니다.")
         return values
+
+    @property
+    def gold_policy_ids(self) -> list[str]:
+        return self.expected_policy_ids
 
 
 def project_path(path: Path) -> Path:

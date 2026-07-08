@@ -14,18 +14,14 @@ retriever:
 llm:
   provider: "upstage"
   model: "solar-pro3"
-  max_input_tokens: 32768
-  summary_trigger_ratio: 0.65
-  summary_keep_recent_turns: 3
-  token_chars_per_token: 2.0
 
 evaluation:
-  example_path: "data/eval/examples.jsonl"
+  example_path: "data/eval/eval_v1_100.jsonl"
   provider: "openai"
   model: "gpt-5.4-mini"
-  dataset_name: "Youth Policy RAG Sample"
-  experiment_prefix: "youth-policy-rag"
-  max_concurrency: 1
+  dataset_name: "PolicyRAGEval_v1_100"
+  experiment_prefix: "260707"
+  max_concurrency: 3
 
 database:
   echo: true

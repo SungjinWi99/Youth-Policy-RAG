@@ -15,9 +15,9 @@ from src.rag.state import (
     RAGResult,
     RAGUserProfile,
 )
-from src.rag.retriever import PolicyRetriever
-from src.rag.agent import PolicyAgent
-from src.rag.router import PolicyRouter
+from src.rag.nodes.retriever import PolicyRetriever
+from src.rag.nodes.agent import PolicyAgent
+from src.rag.nodes.router import PolicyRouter
 from src.checkpointer import AsyncCompatibleSqliteSaver
 from src.rag.utils.formatting import format_doc
 

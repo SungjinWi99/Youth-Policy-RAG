@@ -4,14 +4,33 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.chat.router import chat_router
+from src.chat.models import ConversationThread
 from src.dependencies import get_db, get_rag_graph
 from src.user.models import UserProfile
 
 
 class FakeSession:
+    def __init__(self):
+        self.objects = {}
+
     def get(self, model, user_id):
-        assert model is UserProfile
-        return UserProfile(user_id=user_id, age=27, region="서울")
+        if model is UserProfile:
+            return UserProfile(user_id=user_id, age=27, region="서울")
+        if model is ConversationThread:
+            return self.objects.get((model, user_id))
+        raise AssertionError(f"unexpected model: {model}")
+
+    def add(self, obj):
+        self.objects[(type(obj), obj.user_id)] = obj
+
+    def commit(self):
+        pass
+
+    def refresh(self, obj):
+        pass
+
+    def delete(self, obj):
+        self.objects.pop((type(obj), obj.user_id), None)
 
 
 class FakeRagGraph:
@@ -33,13 +52,14 @@ def build_client():
     app = FastAPI()
     app.include_router(chat_router)
     rag = FakeRagGraph()
+    session = FakeSession()
     app.dependency_overrides[get_rag_graph] = lambda: rag
-    app.dependency_overrides[get_db] = lambda: FakeSession()
-    return TestClient(app), rag
+    app.dependency_overrides[get_db] = lambda: session
+    return TestClient(app), rag, session
 
 
 def test_chat_endpoint_forwards_request_to_policy_rag_graph():
-    client, rag = build_client()
+    client, rag, _ = build_client()
 
     response = client.post(
         "/chat",
@@ -75,10 +95,19 @@ def test_chat_endpoint_forwards_request_to_policy_rag_graph():
 
 
 def test_delete_chat_endpoint_clears_graph_checkpoint():
-    client, rag = build_client()
+    client, rag, session = build_client()
+    session.add(
+        ConversationThread(
+            user_id="api-user",
+            thread_id="api-user:existing-thread",
+        )
+    )
 
     response = client.delete("/chat/api-user")
 
     assert response.status_code == 200
     assert response.json() == {"message": "대화 기록 삭제 완료"}
-    assert rag.deleted_user_ids == ["api-user"]
+    assert rag.deleted_user_ids == ["api-user:existing-thread", "api-user"]
+    new_thread = session.get(ConversationThread, "api-user")
+    assert new_thread.thread_id.startswith("api-user:")
+    assert new_thread.thread_id != "api-user:existing-thread"

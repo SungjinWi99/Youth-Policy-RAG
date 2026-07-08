@@ -11,3 +11,6 @@ data/eval/*
 !data/eval/examples.jsonl
 
 test.ipynb
+.DS_Store
+
+docs/private

@@ -16,7 +16,7 @@ class RouterOutput(BaseModel):
      description=(
         "다음 실행 분기."
         "'agent'는 현재 활성 정책 문서만으로 현재 질문에 답변이 가능한 경우"
-        "'retriever'는 새 정책 검색이 필요하거나 현재 활성 문서가 없거나 부족한 경우."
+        "'retriever'는 새 정책 검색이 필요하거나 현재 활성 문서가 부족한 경우."
         )
   )
   route_reason: str = Field(

@@ -20,16 +20,12 @@ class RetrieverConfig(BaseModel):
   search_k: int
 
 class LLMConfig(BaseModel):
-  provider: Literal['google', 'openai', 'upstage']
+  provider: Literal['google', 'openai', 'upstage', 'anthropic']
   model: str
-  max_input_tokens: int = Field(gt=0)
-  summary_trigger_ratio: float = Field(gt=0, lt=1)
-  summary_keep_recent_turns: int = Field(ge=1)
-  token_chars_per_token: float = Field(gt=0)
 
 class EvaluationConfig(BaseModel):
   example_path: str
-  provider: Literal['google', 'openai', 'upstage']
+  provider: Literal['google', 'openai', 'upstage', 'anthropic']
   model: str
   dataset_name: str
   experiment_prefix: str

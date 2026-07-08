@@ -84,7 +84,7 @@ def init_state() -> None:
     st.session_state.setdefault("api_base_url", DEFAULT_API_BASE_URL)
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("active_user_id", "")
-    st.session_state.setdefault("exclude_expired", True)
+    st.session_state.setdefault("exclude_expired", False)
     st.session_state.setdefault("policy_id_input", "")
     st.session_state.setdefault("policy_detail", None)
 

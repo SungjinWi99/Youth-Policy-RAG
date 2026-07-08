@@ -36,7 +36,7 @@ flowchart LR
 
     EVALDATA["Evaluation JSONL"] --> LANGSMITH["LangSmith Dataset"]
     LANGSMITH --> EVALRUN["RAG Evaluation"]
-    EVALRUN --> RAG
+    EVALRUN --> GRAPH
 ```
 
 ## 프로젝트 구조
@@ -50,28 +50,33 @@ flowchart LR
 │   ├── raw/                       # OpenAPI 원본 데이터
 │   ├── chroma/                    # Chroma 영속 데이터
 │   ├── sqlite/                    # 사용자 프로필 DB, 대화 checkpoint DB
-│   └── eval/examples.jsonl        # 평가 데이터셋
+│   └── eval/                      # 평가 데이터셋 JSONL
 ├── scripts/
 │   ├── collect_data.py            # 정책 데이터 수집
 │   ├── ingest_chroma.py           # 문서 임베딩 및 Chroma 적재
-│   ├── create_eval_dataset.py     # LangSmith Dataset 생성·갱신
+│   ├── generate_eval_dataset.py   # 평가 데이터 생성
+│   ├── evaluate_embedding_retrieval.py # 임베딩 검색 평가
 │   └── run_evaluation.py          # RAG 평가 실행
 ├── src/
 │   ├── chat/
-│   │   └── router.py              # chat API
-│   ├── policies/                   # 정책 상세 조회 모델과 API
+│   │   ├── models.py              # 대화 thread ID 저장 모델
+│   │   ├── router.py              # chat API
+│   │   └── schemas.py             # chat request schema
+│   ├── policy/                    # 정책 상세 조회 모델과 API
 │   ├── rag/
 │   │   ├── graph.py               # LangGraph workflow와 public API
-│   │   ├── retriever.py           # 사용자 조건 기반 정책 검색
-│   │   ├── summarizer.py          # 대화 압축
-│   │   ├── generator.py           # prompt 구성과 답변 생성
+│   │   ├── nodes/
+│   │   │   ├── router.py          # 검색 필요 여부 분기
+│   │   │   ├── retriever.py       # 사용자 조건 기반 정책 검색
+│   │   │   └── agent.py           # prompt 구성과 답변 생성
 │   │   ├── state.py               # graph state schema
-│   │   └── prompts.py             # 생성·요약 prompt
+│   │   ├── prompts.py             # 라우터·생성 prompt
+│   │   └── utils/formatting.py    # context와 사용자 프로필 포맷
 │   ├── user/                      # 사용자 프로필 모델과 API
 │   ├── config.py                  # config.yaml 로더
 │   ├── database.py                # SQLite engine과 session
 │   ├── dependencies.py            # FastAPI dependencies
-│   ├── evaluators.py              # 평가 데이터 검증 및 evaluator
+│   ├── eval.py                    # 평가 데이터 검증 및 evaluator
 │   └── factory.py                 # 모델·RAG factory
 └── tests/
 ```
@@ -100,18 +105,14 @@ retriever:
 llm:
   provider: "upstage"
   model: "solar-pro3"
-  max_input_tokens: 32768
-  summary_trigger_ratio: 0.65
-  summary_keep_recent_turns: 3
-  token_chars_per_token: 2.0
 
 evaluation:
-  example_path: "data/eval/examples.jsonl"
+  example_path: "data/eval/eval_v1_100.jsonl"
   provider: "openai"
   model: "gpt-5.4-mini"
-  dataset_name: "Youth Policy RAG Sample"
-  experiment_prefix: "youth-policy-rag"
-  max_concurrency: 1
+  dataset_name: "PolicyRAGEval_v1_100"
+  experiment_prefix: "260707"
+  max_concurrency: 3
 ```
 
 ## 데이터 준비
@@ -166,29 +167,25 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 
 ### LangGraph 워크플로
 
-`src/rag/graph.py`의 그래프는 검색 후 예상 prompt 토큰 수를 확인해 필요하면
-대화를 먼저 요약합니다.
+`src/rag/graph.py`의 그래프는 이전 대화와 현재 활성 문서를 보고 새 검색이
+필요한지 먼저 판단합니다.
 
 ```text
-START -> retrieve -> summarize? -> generate -> END
+START -> router -> retriever? -> agent -> END
 ```
 
-토큰 한도와 요약 임계값은 모델의 `.profile`을 참조하지 않고 `config.yaml`의
-`max_input_tokens`와 `summary_trigger_ratio`만 사용합니다. 오래된 대화는 LLM이
-기존 요약과 합쳐 압축하고, 최근 `summary_keep_recent_turns`개 대화는 원문으로
-유지합니다.
-
-- `retrieve`: 사용자 프로필로 Chroma metadata filter를 만들고 정책 문서를 검색
-- `generate`: 검색 문서와 사용자 프로필을 prompt에 넣어 답변 생성
-- graph state: `user_input`, `user_profile`, `exclude_expired`, `documents`, `answer`
-- conversation state: Human/AI 메시지를 `user_id`별 `thread_id`에 누적
+- `router`: 현재 질문, 대화 기록, 기존 검색 문서를 보고 `retriever` 또는 `agent`로 분기
+- `retriever`: 사용자 프로필로 Chroma metadata filter를 만들고 정책 문서를 검색
+- `agent`: 검색 문서와 사용자 프로필을 prompt에 넣어 답변 생성
+- graph state: `user_input`, `user_profile`, `exclude_expired`, `messages`, `documents`, `route`, `answer`
+- conversation state: Human/AI 메시지를 사용자별 `thread_id`에 누적
 
 동기 호출, 비동기 호출, SSE 스트리밍 모두 같은 컴파일된 그래프를 사용합니다.
 사용자 프로필은 기존 SQLite DB에서 조회하고, 대화 상태는
 `data/sqlite/conversations.db`의 LangGraph SQLite checkpointer에 별도로
-저장합니다. 같은 `user_id`의 다음 요청에는 이전 질문과 답변이 prompt history로
-포함되며, 다른 사용자 ID의 대화와는 분리됩니다. 사용자 프로필을 삭제하면 해당
-사용자의 대화 checkpoint도 함께 삭제됩니다.
+저장합니다. `src/chat/models.py`의 `ConversationThread`가 사용자 ID별 thread ID를
+관리하므로, 대화 기록 삭제 후에는 새 thread ID로 다음 대화를 시작합니다.
+사용자 프로필을 삭제하면 해당 사용자의 대화 checkpoint도 함께 삭제됩니다.
 
 ### Streamlit 데모
 
@@ -216,6 +213,7 @@ streamlit run demo_streamlit.py --server.port 8501
 | `DELETE` | `/user/{user_id}` | 사용자 프로필 삭제 |
 | `GET` | `/policies/{policy_id}` | 정책 상세 정보 조회 |
 | `POST` | `/chat` | 사용자 프로필 기반 정책 검색 및 SSE 답변 |
+| `DELETE` | `/chat/{user_id}` | 사용자 대화 기록 삭제 |
 
 사용자 등록 예시:
 
@@ -249,19 +247,25 @@ SSE 응답은 검색 context와 정책 ID를 담은 `metadata`, 답변 텍스트
 
 ## RAG 평가
 
-평가 데이터는 `data/eval/examples.jsonl`에서 관리합니다. 각 사례는 질문,
-사용자 프로필, 기준 답변, 기준 context, 정답 정책 ID를 포함합니다.
+평가 데이터는 `config.yaml`의 `evaluation.example_path`에서 관리합니다. 각 사례는
+질문, 사용자 프로필, 정답 정책 ID, 만료 정책 제외 여부, metadata를 포함합니다.
 
-LangSmith Dataset을 생성하거나 갱신합니다.
+평가 데이터를 생성합니다.
 
 ```bash
-python -m scripts.create_eval_dataset
+python -m scripts.generate_eval_dataset --sample-size 100 --overwrite
 ```
 
-LangGraph RAG와 evaluator를 실행합니다.
+LangSmith Dataset을 생성하거나 갱신하고, LangGraph RAG와 evaluator를 실행합니다.
 
 ```bash
 python -m scripts.run_evaluation
+```
+
+임베딩 검색만 별도로 평가할 수도 있습니다.
+
+```bash
+python -m scripts.evaluate_embedding_retrieval
 ```
 
 평가 지표:
@@ -269,15 +273,15 @@ python -m scripts.run_evaluation
 | 지표 | 계산 방식 |
 | --- | --- |
 | Context Recall | 정답 정책 ID 중 검색된 정책 ID의 비율 |
-| Context Precision | 검색 순위에 따른 정답 정책 ID의 Average Precision |
+| Context Average Helpfulness | 검색된 각 context가 질문과 프로필에 얼마나 도움이 되는지 LLM judge로 평가 |
 | Faithfulness | 답변의 사실 주장이 검색 context에 근거하는지 LLM judge로 평가 |
 | Answer Relevance | 답변이 질문과 사용자 프로필 요구에 직접 답하는지 LLM judge로 평가 |
 
-Context Recall과 Context Precision은 정책 ID를 직접 비교하고, Faithfulness와
-Answer Relevance만 평가 모델을 호출합니다.
+Context Recall은 정책 ID를 직접 비교하고, Context Average Helpfulness,
+Faithfulness, Answer Relevance는 평가 모델을 호출합니다.
 
 ## 테스트
 
 ```bash
-python -m unittest discover -s tests
+PYTHONPATH=.:src python -m pytest tests -q
 ```
