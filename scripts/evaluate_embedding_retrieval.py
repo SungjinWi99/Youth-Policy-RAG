@@ -548,8 +548,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     load_dotenv()
-    os.environ["LANGSMITH_TRACING"] = "false"
-    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+    os.environ["LANGFUSE_TRACING"] = "false"
 
     dataset_path = project_path(args.dataset)
     chroma_dir = project_path(args.chroma_dir)

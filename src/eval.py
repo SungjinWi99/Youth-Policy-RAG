@@ -5,6 +5,82 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field, field_validator, ValidationError
 
 
+FAITHFULNESS_PROMPT = """
+당신은 RAG의 Faithfulness 평가자입니다.
+
+생성 답변의 독립적인 사실 주장들이 제공된 검색 context와 사용자 프로필에 의해
+뒷받침되는지만 0~1로 평가하세요.
+
+평가하지 마세요:
+- 답변의 유용성
+- 답변의 문장 품질
+- 답변의 상세함
+- 외부 지식 기준의 사실성
+
+기준:
+1.0 = 모든 주요 사실 주장이 context/profile에서 확인됨
+0.75 = 대부분 확인되며 사소한 근거 부족만 있음
+0.5 = 근거 있는 주장과 없는 주장이 섞임
+0.25 = 일부만 근거가 있고 대부분은 근거 부족
+0.0 = 대부분 근거가 없거나 context/profile과 충돌함
+
+
+주의:
+- policy 내용, 지원 조건, 신청 기간, 금액, 절차는 context에 있어야만 근거 있는 주장입니다.
+- user_profile은 사용자 속성 확인 근거로만 사용하세요.
+- context에 없는 내용을 단정하면 감점하세요.
+- “제공된 정보만으로는 알 수 없음”처럼 한계를 밝힌 문장은 감점하지 마세요.
+- 정보 누락 자체는 faithfulness 문제가 아닙니다.
+""".strip()
+
+ANSWER_RELEVANCY_PROMPT = """
+당신은 RAG의 Answer Relevance 평가자입니다.
+
+생성 답변이 사용자 질문과 사용자 프로필에 얼마나 직접적으로 답하는지만 0~1로 평가하세요.
+
+평가하지 마세요:
+- 사실 정확성
+- context 근거 여부
+- faithfulness
+- 문장 품질
+
+기준:
+1.0 = 질문의 핵심 요구에 직접 답하고 필요한 프로필 조건을 반영하며 불필요한 내용이 거의 없음
+0.75 = 대체로 답하지만 일부 세부 요구가 빠졌거나 약간 불필요한 내용이 있음
+0.5 = 같은 주제이나 핵심 요구를 부분적으로만 다룸
+0.25 = 약하게 관련되지만 실제 질문에는 거의 답하지 못함
+0.0 = 무관하거나 다른 질문에 답함
+
+주의:
+- “신청 가능한가?”에는 가능 여부/조건 판단 중심으로 답해야 합니다.
+- “지원 내용은?”에는 지원 내용 중심으로 답해야 합니다.
+- “신청 방법은?”에는 신청 절차 중심으로 답해야 합니다.
+- 답변이 사실적으로 틀렸거나 context에 없는 내용이어도, 이 지표에서는 그 자체로 감점하지 마세요.
+- 단, 틀린 내용 때문에 질문의 핵심 의도에서 벗어나면 관련성 기준으로 감점하세요.
+""".strip()
+
+CONTEXT_HELPFULNESS_PROMPT = """
+당신은 청년정책 RAG의 Context Helpfulness 평가자입니다.
+검색된 단일 context가 사용자의 질문과 상황에 얼마나 도움이 되는지 평가하세요.
+
+평가하지 말 것:
+- 생성 답변의 문장 품질
+- 생성 답변의 사실성/faithfulness
+- 전체 검색 결과의 품질
+
+기준:
+- 1.0: 질문 의도와 정책 주제가 직접 일치하고, 사용자 프로필 조건에도 명백히 부합하며,
+       지원 내용/대상/신청 정보 등 답변에 바로 쓸 핵심 정보가 있다.
+- 0.75: 질문 해결에 직접 도움이 되지만, 일부 조건이나 세부 정보가 부족하거나 프로필 적합성이 완전히 확정되지는 않는다.
+- 0.5: 같은 큰 분야의 정책이지만 질문의 핵심을 직접 해결하지 못하고, 배경 정보나 보조 정보로만 쓸 수 있다.
+- 0.25: 주제나 대상이 일부만 겹치며, 답변에 쓰더라도 매우 제한적으로만 도움이 된다.
+- 0.0: 질문과 무관하거나, 사용자 프로필과 명백히 맞지 않거나, 질문 해결에 쓰면 오히려 잘못된 답변을 만들 가능성이 높다.
+
+주의:
+조건이 context에 없거나 불명확하면 그것만으로 0점 처리하지 마세요.
+지역/나이/소득/신청기간 등이 명백히 충돌할 때만 크게 감점하세요.
+""".strip()
+
 class MetricScore(BaseModel):
     score: float = Field(
         ge=0.0,
@@ -44,20 +120,19 @@ class EvaluationExample(BaseModel):
     exclude_expired: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    def to_langsmith_example(self) -> dict:
+    def to_evaluation_item(self) -> dict:
         return {
             "case_id": self.case_id,
-            "inputs": EvaluationInputs(
+            "input": EvaluationInputs(
                 question=self.user_input,
                 user_profile=self.user_profile,
                 exclude_expired=self.exclude_expired,
             ).model_dump(),
-            "outputs": EvaluationOutputs(
+            "expected_output": EvaluationOutputs(
                 expected_policy_ids=self.expected_policy_ids,
             ).model_dump(),
             "metadata": self.metadata,
         }
-
 
 def calculate_context_recall(
     retrieved_policy_ids: list[str],
@@ -81,35 +156,9 @@ def _score_chain(llm: Any, system_prompt: str):
 
 
 def build_evaluators(llm: Any):
-    faithfulness_chain = _score_chain(
-        llm,
-        """
-당신은 RAG의 Faithfulness 평가자입니다.
-생성 답변의 독립적인 사실 주장들이 검색된 context와 유저 프로필에 의해 얼마나 뒷받침되는지
-평가하세요. 모든 사실 주장이 근거를 가지면 1, 근거 없는 주장이 대부분이면 0입니다.
-답변이 질문에 유용한지는 평가하지 마세요.
-""".strip(),
-    )
-    answer_relevance_chain = _score_chain(
-        llm,
-        """
-당신은 RAG의 Answer Relevance 평가자입니다.
-생성 답변이 사용자의 질문과 프로필에 직접 답하고 있는지 평가하세요.
-질문의 핵심 요구를 빠짐없이 다루고 불필요한 내용이 거의 없으면 1입니다.
-사실의 정확성이나 context 근거 여부는 이 지표에서 평가하지 마세요.
-""".strip(),
-    )
-    context_helpfulness_chain = _score_chain(
-        llm,
-        """
-당신은 청년정책 RAG의 Context Helpfulness 평가자입니다.
-검색된 단일 context가 사용자의 질문과 프로필에 맞는 답변을 만드는 데
-얼마나 도움이 되는지 평가하세요.
-정책 주제, 지원 내용이 질문 해결에 직접적인 도움이 되면 1,
-질문과 무관하거나 조건이 명백히 맞지 않으면 0에 가깝게 채점하세요.
-생성 답변의 문장 품질이나 전체 faithfulness는 평가하지 마세요.
-""".strip(),
-    )
+    faithfulness_chain = _score_chain(llm, FAITHFULNESS_PROMPT)
+    answer_relevance_chain = _score_chain(llm, ANSWER_RELEVANCY_PROMPT)
+    context_helpfulness_chain = _score_chain(llm, CONTEXT_HELPFULNESS_PROMPT)
     def context_recall(
         outputs: dict,
         reference_outputs: dict,
@@ -226,8 +275,90 @@ def build_evaluators(llm: Any):
         answer_relevance,
     ]
 
-def load_examples(
-    path: Path) -> list[dict]:
+
+def _to_langfuse_evaluation(result: dict):
+    try:
+        from langfuse import Evaluation
+    except ImportError as error:
+        raise RuntimeError(
+            "Langfuse 평가를 실행하려면 langfuse 패키지가 필요합니다. "
+            "requirements.txt를 설치한 뒤 다시 실행하세요."
+        ) from error
+
+    return Evaluation(
+        name=result["key"],
+        value=result["score"],
+        comment=result.get("comment"),
+    )
+
+
+def build_langfuse_evaluators(llm: Any):
+    evaluators = {
+        evaluator.__name__: evaluator
+        for evaluator in build_evaluators(llm)
+    }
+
+    def context_recall(
+        *,
+        output: dict,
+        expected_output: dict,
+        **kwargs,
+    ):
+        return _to_langfuse_evaluation(
+            evaluators["context_recall"](
+                outputs=output or {},
+                reference_outputs=expected_output or {},
+            )
+        )
+
+    def context_average_helpfulness(
+        *,
+        input: dict,
+        output: dict,
+        **kwargs,
+    ):
+        return _to_langfuse_evaluation(
+            evaluators["context_average_helpfulness"](
+                inputs=input or {},
+                outputs=output or {},
+            )
+        )
+
+    def faithfulness(
+        *,
+        input: dict,
+        output: dict,
+        **kwargs,
+    ):
+        return _to_langfuse_evaluation(
+            evaluators["faithfulness"](
+                inputs=input or {},
+                outputs=output or {},
+            )
+        )
+
+    def answer_relevance(
+        *,
+        input: dict,
+        output: dict,
+        **kwargs,
+    ):
+        return _to_langfuse_evaluation(
+            evaluators["answer_relevance"](
+                inputs=input or {},
+                outputs=output or {},
+            )
+        )
+
+    return [
+        context_recall,
+        context_average_helpfulness,
+        faithfulness,
+        answer_relevance,
+    ]
+
+
+def load_evaluation_items(path: Path) -> list[dict]:
     dataset_path = Path(path)
     examples: list[EvaluationExample] = []
     case_ids: set[str] = set()
@@ -255,4 +386,4 @@ def load_examples(
     if not examples:
         raise ValueError(f"{dataset_path}에 평가 데이터가 없습니다.")
 
-    return [example.to_langsmith_example() for example in examples]
+    return [example.to_evaluation_item() for example in examples]

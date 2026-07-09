@@ -1,5 +1,5 @@
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Literal
 from uuid import uuid4
 
@@ -20,6 +20,7 @@ from src.rag.nodes.agent import PolicyAgent
 from src.rag.nodes.router import PolicyRouter
 from src.checkpointer import AsyncCompatibleSqliteSaver
 from src.rag.utils.formatting import format_doc
+from src.observability import build_langfuse_config
 
 class PolicyRagGraph:
   def __init__(self,
@@ -77,10 +78,31 @@ class PolicyRagGraph:
     )
 
   def _build_graph_config(self,
-                          user_id: str | None,
+                          thread_id: str | None,
+                          *,
+                          trace_user_id: str | None = None,
+                          trace_tags: Sequence[str] | None = None,
+                          trace_metadata: dict | None = None,
                           ) -> dict:
-        thread_id = user_id or str(uuid4())
-        return {"configurable": {"thread_id": thread_id}}
+        resolved_thread_id = thread_id or str(uuid4())
+        config = {"configurable": {"thread_id": resolved_thread_id}}
+        langfuse_config = build_langfuse_config(
+          user_id=trace_user_id,
+          session_id=resolved_thread_id,
+          tags=trace_tags or ["youth-policy-rag"],
+          metadata={
+            "langgraph_thread_id": resolved_thread_id,
+            **(trace_metadata or {}),
+          },
+        )
+        for key, value in langfuse_config.items():
+          if key == "metadata":
+            config.setdefault("metadata", {}).update(value)
+          elif key == "callbacks":
+            config.setdefault("callbacks", []).extend(value)
+          else:
+            config[key] = value
+        return config
 
   def build_graph_input(self,
                         *,
@@ -185,8 +207,12 @@ class PolicyRagGraph:
   def generate_answer(self,
                       user_input: str,
                       user_profile: RAGUserProfile,
-                      user_id: str | None = None,
-                      exclude_expired: bool = True
+                      thread_id: str | None = None,
+                      exclude_expired: bool = True,
+                      *,
+                      trace_user_id: str | None = None,
+                      trace_tags: Sequence[str] | None = None,
+                      trace_metadata: dict | None = None,
   ) -> RAGResult:
     graph_output = self.graph.invoke(
       self.build_graph_input(
@@ -194,7 +220,12 @@ class PolicyRagGraph:
         user_profile=user_profile,
         exclude_expired=exclude_expired
       ),
-      config = self._build_graph_config(user_id)
+      config = self._build_graph_config(
+        thread_id,
+        trace_user_id=trace_user_id,
+        trace_tags=trace_tags,
+        trace_metadata=trace_metadata,
+      )
     )
     return self.build_result(
       answer=graph_output['answer'],
@@ -204,8 +235,12 @@ class PolicyRagGraph:
   async def agenerate_answer(self,
                       user_input: str,
                       user_profile: RAGUserProfile,
-                      user_id: str | None = None,
-                      exclude_expired: bool = True
+                      thread_id: str | None = None,
+                      exclude_expired: bool = True,
+                      *,
+                      trace_user_id: str | None = None,
+                      trace_tags: Sequence[str] | None = None,
+                      trace_metadata: dict | None = None,
   ) -> RAGResult:
     graph_output = await self.graph.ainvoke(
       self.build_graph_input(
@@ -213,7 +248,12 @@ class PolicyRagGraph:
         user_profile=user_profile,
         exclude_expired=exclude_expired
       ),
-      config = self._build_graph_config(user_id)
+      config = self._build_graph_config(
+        thread_id,
+        trace_user_id=trace_user_id,
+        trace_tags=trace_tags,
+        trace_metadata=trace_metadata,
+      )
     )
     return self.build_result(
       answer=graph_output['answer'],
@@ -223,8 +263,12 @@ class PolicyRagGraph:
   async def stream_answer(self,
                           user_input: str,
                           user_profile: RAGUserProfile,
-                          user_id: str | None = None,
-                          exclude_expired: bool = True
+                          thread_id: str | None = None,
+                          exclude_expired: bool = True,
+                          *,
+                          trace_user_id: str | None = None,
+                          trace_tags: Sequence[str] | None = None,
+                          trace_metadata: dict | None = None,
   ) -> AsyncIterator[str]:
     graph_input = self.build_graph_input(
       user_input=user_input,
@@ -233,7 +277,12 @@ class PolicyRagGraph:
     )
     streamed_answer = ""
 
-    config = self._build_graph_config(user_id)
+    config = self._build_graph_config(
+      thread_id,
+      trace_user_id=trace_user_id,
+      trace_tags=trace_tags,
+      trace_metadata=trace_metadata,
+    )
     previous_snapshot = await self.graph.aget_state(config)
     previous_documents = previous_snapshot.values.get("documents", [])
     metadata_sent = False
@@ -325,8 +374,8 @@ class PolicyRagGraph:
         f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
     )
 
-  def delete_conversation(self, user_id: str) -> None:
-      self.checkpointer.delete_thread(user_id)
+  def delete_conversation(self, thread_id: str) -> None:
+      self.checkpointer.delete_thread(thread_id)
 
   def close(self) -> None:
       close = getattr(self.checkpointer, "close", None)

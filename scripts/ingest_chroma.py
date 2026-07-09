@@ -271,8 +271,7 @@ def parse_args(
 def main() -> None:
     args = parse_args()
     load_dotenv()
-    os.environ["LANGSMITH_TRACING"] = "false"
-    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+    os.environ["LANGFUSE_TRACING"] = "false"
 
     raw_path = project_path(args.raw_path)
     chroma_dir = project_path(args.chroma_dir)

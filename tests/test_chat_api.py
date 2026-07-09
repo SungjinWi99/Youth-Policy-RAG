@@ -36,7 +36,7 @@ class FakeSession:
 class FakeRagGraph:
     def __init__(self):
         self.stream_calls = []
-        self.deleted_user_ids = []
+        self.deleted_thread_ids = []
 
     async def stream_answer(self, **kwargs):
         self.stream_calls.append(kwargs)
@@ -44,8 +44,8 @@ class FakeRagGraph:
         yield 'data: {"type": "chunk", "data": "테스트 답변"}\n\n'
         yield 'data: {"type": "done"}\n\n'
 
-    def delete_conversation(self, user_id):
-        self.deleted_user_ids.append(user_id)
+    def delete_conversation(self, thread_id):
+        self.deleted_thread_ids.append(thread_id)
 
 
 def build_client():
@@ -91,7 +91,8 @@ def test_chat_endpoint_forwards_request_to_policy_rag_graph():
         "region": "서울",
     }
     assert rag.stream_calls[0]["exclude_expired"] is False
-    assert rag.stream_calls[0]["user_id"] == "api-user"
+    assert rag.stream_calls[0]["thread_id"] == "api-user"
+    assert rag.stream_calls[0]["trace_user_id"] == "api-user"
 
 
 def test_delete_chat_endpoint_clears_graph_checkpoint():
@@ -107,7 +108,7 @@ def test_delete_chat_endpoint_clears_graph_checkpoint():
 
     assert response.status_code == 200
     assert response.json() == {"message": "대화 기록 삭제 완료"}
-    assert rag.deleted_user_ids == ["api-user:existing-thread", "api-user"]
+    assert rag.deleted_thread_ids == ["api-user:existing-thread", "api-user"]
     new_thread = session.get(ConversationThread, "api-user")
     assert new_thread.thread_id.startswith("api-user:")
     assert new_thread.thread_id != "api-user:existing-thread"

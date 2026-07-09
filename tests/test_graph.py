@@ -1,5 +1,7 @@
 import asyncio
 import json
+import sys
+import types
 
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
@@ -128,6 +130,51 @@ def test_router_node_returns_only_route_metadata():
     }
 
 
+def test_graph_config_skips_langfuse_when_disabled(monkeypatch):
+    monkeypatch.delenv("LANGFUSE_TRACING", raising=False)
+    graph, _, _, _ = build_graph()
+
+    config = graph._build_graph_config(
+        "thread-1",
+        trace_user_id="user-1",
+    )
+
+    assert config == {"configurable": {"thread_id": "thread-1"}}
+
+
+def test_graph_config_adds_langfuse_callback_metadata(monkeypatch):
+    class FakeCallbackHandler:
+        pass
+
+    langfuse_module = types.ModuleType("langfuse")
+    langchain_module = types.ModuleType("langfuse.langchain")
+    langchain_module.CallbackHandler = FakeCallbackHandler
+    langfuse_module.langchain = langchain_module
+    monkeypatch.setitem(sys.modules, "langfuse", langfuse_module)
+    monkeypatch.setitem(sys.modules, "langfuse.langchain", langchain_module)
+    monkeypatch.setenv("LANGFUSE_TRACING", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+
+    graph, _, _, _ = build_graph()
+    config = graph._build_graph_config(
+        "thread-1",
+        trace_user_id="user-1",
+        trace_tags=["rag-test"],
+        trace_metadata={"case_id": "case-1"},
+    )
+
+    assert isinstance(config["callbacks"][0], FakeCallbackHandler)
+    assert config["tags"] == ["rag-test"]
+    assert config["metadata"] == {
+        "langfuse_user_id": "user-1",
+        "langfuse_session_id": "thread-1",
+        "langfuse_tags": ["rag-test"],
+        "langgraph_thread_id": "thread-1",
+        "case_id": "case-1",
+    }
+
+
 def test_generate_answer_retrieves_then_returns_public_result():
     graph, router, retriever, agent = build_graph()
     profile = {"age": 27, "region": "서울"}
@@ -135,7 +182,7 @@ def test_generate_answer_retrieves_then_returns_public_result():
     result = graph.generate_answer(
         user_input="월세 지원 정책을 알려줘.",
         user_profile=profile,
-        user_id="sync-user",
+        thread_id="sync-user",
         exclude_expired=True,
     )
 
@@ -161,12 +208,12 @@ def test_follow_up_reuses_documents_and_preserves_chat_history():
     graph.generate_answer(
         user_input="월세 정책을 알려줘.",
         user_profile=profile,
-        user_id="history-user",
+        thread_id="history-user",
     )
     result = graph.generate_answer(
         user_input="신청 방법은?",
         user_profile=profile,
-        user_id="history-user",
+        thread_id="history-user",
     )
 
     assert result.answer == "답변: 신청 방법은?"
@@ -187,7 +234,7 @@ def test_agenerate_answer_uses_async_nodes():
         graph.agenerate_answer(
             user_input="비동기 질문",
             user_profile={},
-            user_id="async-user",
+            thread_id="async-user",
             exclude_expired=False,
         )
     )
@@ -208,7 +255,7 @@ def test_stream_answer_emits_metadata_chunk_and_done_for_both_routes():
             async for event in graph.stream_answer(
                 user_input=question,
                 user_profile=profile,
-                user_id="stream-user",
+                thread_id="stream-user",
             )
         ]
 
@@ -237,13 +284,13 @@ def test_delete_conversation_removes_persisted_documents():
     graph.generate_answer(
         user_input="첫 질문",
         user_profile=profile,
-        user_id="delete-user",
+        thread_id="delete-user",
     )
     graph.delete_conversation("delete-user")
     graph.generate_answer(
         user_input="삭제 후 질문",
         user_profile=profile,
-        user_id="delete-user",
+        thread_id="delete-user",
     )
 
     assert len(retriever.calls) == 2

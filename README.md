@@ -15,7 +15,7 @@
 - SQLite 기반 사용자 프로필 CRUD
 - 정책 ID 기반 원본 정책 상세 조회 API
 - Streamlit 기반 API 테스트 화면
-- LangSmith Dataset과 evaluator를 이용한 RAG 품질 평가
+- Langfuse Dataset과 evaluator를 이용한 RAG 품질 평가
 
 ## 시스템 구조
 
@@ -34,8 +34,8 @@ flowchart LR
     GENERATE --> LLM["Chat Model"]
     GRAPH --> SSE["SSE metadata / chunks"]
 
-    EVALDATA["Evaluation JSONL"] --> LANGSMITH["LangSmith Dataset"]
-    LANGSMITH --> EVALRUN["RAG Evaluation"]
+    EVALDATA["Evaluation JSONL"] --> LANGFUSE["Langfuse Dataset"]
+    LANGFUSE --> EVALRUN["RAG Evaluation"]
     EVALRUN --> GRAPH
 ```
 
@@ -77,6 +77,7 @@ flowchart LR
 │   ├── database.py                # SQLite engine과 session
 │   ├── dependencies.py            # FastAPI dependencies
 │   ├── eval.py                    # 평가 데이터 검증 및 evaluator
+│   ├── observability.py           # Langfuse tracing 설정
 │   └── factory.py                 # 모델·RAG factory
 └── tests/
 ```
@@ -107,12 +108,21 @@ llm:
   model: "solar-pro3"
 
 evaluation:
-  example_path: "data/eval/eval_v1_100.jsonl"
-  provider: "openai"
-  model: "gpt-5.4-mini"
-  dataset_name: "PolicyRAGEval_v1_100"
-  experiment_prefix: "260707"
+  example_path: "data/eval/eval_v1_50.jsonl"
+  provider: "anthropic"
+  model: "claude-haiku-4-5"
+  dataset_name: "PolicyRAGEval_v2_50"
+  experiment_prefix: "260709"
   max_concurrency: 3
+```
+
+Langfuse tracing과 평가 실행에는 `.env`에 다음 값이 필요합니다.
+
+```bash
+LANGFUSE_TRACING=true
+LANGFUSE_PUBLIC_KEY=...
+LANGFUSE_SECRET_KEY=...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
 
 ## 데이터 준비
@@ -256,7 +266,7 @@ SSE 응답은 검색 context와 정책 ID를 담은 `metadata`, 답변 텍스트
 python -m scripts.generate_eval_dataset --sample-size 100 --overwrite
 ```
 
-LangSmith Dataset을 생성하거나 갱신하고, LangGraph RAG와 evaluator를 실행합니다.
+Langfuse Dataset을 생성하거나 갱신하고, LangGraph RAG와 evaluator를 실행합니다.
 
 ```bash
 python -m scripts.run_evaluation

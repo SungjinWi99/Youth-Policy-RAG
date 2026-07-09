@@ -16,11 +16,11 @@ llm:
   model: "solar-pro3"
 
 evaluation:
-  example_path: "data/eval/eval_v1_100.jsonl"
-  provider: "openai"
-  model: "gpt-5.4-mini"
-  dataset_name: "PolicyRAGEval_v1_100"
-  experiment_prefix: "260707"
+  example_path: "data/eval/eval_v1_50.jsonl"
+  provider: "anthropic"
+  model: "claude-haiku-4-5"
+  dataset_name: "PolicyRAGEval_v2_50"
+  experiment_prefix: "260709"
   max_concurrency: 3
 
 database:

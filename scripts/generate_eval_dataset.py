@@ -617,7 +617,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--enable-tracing",
         action="store_true",
-        help="질문 생성 LLM 호출을 LangSmith에 trace합니다.",
+        help="질문 생성 LLM 호출을 Langfuse에 trace합니다.",
     )
     args = parser.parse_args()
     try:
@@ -640,8 +640,7 @@ def main() -> None:
     args = parse_args()
     load_dotenv()
     if not args.enable_tracing:
-        os.environ["LANGSMITH_TRACING"] = "false"
-        os.environ["LANGCHAIN_TRACING_V2"] = "false"
+        os.environ["LANGFUSE_TRACING"] = "false"
 
     config = load_config()
     models = resolve_generation_models(config, args.generation_model)

@@ -24,7 +24,8 @@ async def stream_answer(request: ChatRequest,
     generator = rag.stream_answer(user_profile=rag_user_profile,
                                   user_input=request.user_input,
                                   exclude_expired=request.exclude_expired,
-                                  user_id=thread_id)
+                                  thread_id=thread_id,
+                                  trace_user_id=request.user_id)
     return StreamingResponse(generator, media_type='text/event-stream')
   except HTTPException:
     raise
