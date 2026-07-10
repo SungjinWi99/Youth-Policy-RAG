@@ -26,6 +26,15 @@ class RAGGraphState(RAGGraphInput, total=False):
     answer: str
     route: Literal['retriever', 'agent']
     route_reason: str
+    answer_strategy: Literal[
+        "brief_reply",
+        "policy_recommendation",
+        "profile_update_response",
+        "focused_followup",
+        "clarifying_question",
+        "summary",
+    ]
+    retrieval_queries: list[str]
 
 
 class RAGGraphOutput(TypedDict):

@@ -12,8 +12,14 @@ retriever:
   search_k: 3
 
 llm:
-  provider: "upstage"
-  model: "solar-pro3"
+  provider: "deepseek"
+  model: "deepseek-v4-flash"
+
+rag:
+  router:
+    history_window: 6
+  agent:
+    history_window: 10
 
 evaluation:
   example_path: "data/eval/eval_v1_50.jsonl"

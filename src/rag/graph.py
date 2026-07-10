@@ -17,22 +17,26 @@ from src.rag.state import (
 )
 from src.rag.nodes.retriever import PolicyRetriever
 from src.rag.nodes.agent import PolicyAgent
-from src.rag.nodes.router import PolicyRouter
+from src.rag.nodes.turn_planner import TurnPlanner
 from src.checkpointer import AsyncCompatibleSqliteSaver
 from src.rag.utils.formatting import format_doc
 from src.observability import build_langfuse_config
 
 class PolicyRagGraph:
   def __init__(self,
-               router: PolicyRouter,
+               planner: TurnPlanner,
                retriever: PolicyRetriever,
                agent: PolicyAgent,
-               checkpointer: AsyncCompatibleSqliteSaver
+               checkpointer: AsyncCompatibleSqliteSaver,
+               router_history_window: int = 6,
+               agent_history_window: int = 10,
                ):
-    self.router = router
+    self.planner = planner
     self.retriever = retriever
     self.agent = agent
     self.checkpointer = checkpointer
+    self.router_history_window = router_history_window
+    self.agent_history_window = agent_history_window
     self.graph = self._compile_graph()
 
   def _compile_graph(self):
@@ -43,10 +47,10 @@ class PolicyRagGraph:
     )
 
     workflow.add_node(
-      "router",
+      "planner",
       RunnableLambda(
-        self._router_node,
-        afunc = self._arouter_node
+        self._planner_node,
+        afunc = self._aplanner_node
       )
     )
     workflow.add_node(
@@ -64,8 +68,8 @@ class PolicyRagGraph:
       )
     )
 
-    workflow.add_edge(START, "router")
-    workflow.add_conditional_edges("router", self._select_route,
+    workflow.add_edge(START, "planner")
+    workflow.add_conditional_edges("planner", self._select_route,
                                    {
                                      "retriever": "retriever",
                                      "agent": "agent"
@@ -116,6 +120,13 @@ class PolicyRagGraph:
       "exclude_expired": exclude_expired,
       "messages": [HumanMessage(content=user_input)]
     }
+
+  def _window_history(self, messages: Sequence, window: int) -> list:
+    history = list(messages)[:-1]
+    if window <= 0:
+      return []
+    return history[-window:]
+
   def build_result(self,
                          *,
                          answer: str,
@@ -134,31 +145,43 @@ class PolicyRagGraph:
       ]
     )
 
-  # Router
-  def _router_node(self, state: RAGGraphState):
+  # Planner
+  def _planner_node(self, state: RAGGraphState):
     documents = state.get('documents', [])
-    chat_history = state.get('messages', [])[:-1]
-    result = self.router.decide(
+    chat_history = self._window_history(
+      state.get('messages', []),
+      self.router_history_window
+    )
+    result = self.planner.decide(
       current_question=state['user_input'],
+      user_profile=state['user_profile'],
       documents = documents,
       chat_history = chat_history
     )
     return {
       "route": result.route,
-      "route_reason": result.route_reason
+      "route_reason": result.route_reason,
+      "answer_strategy": result.answer_strategy,
+      "retrieval_queries": result.retrieval_queries,
     }
 
-  async def _arouter_node(self, state: RAGGraphState):
+  async def _aplanner_node(self, state: RAGGraphState):
     documents = state.get('documents', [])
-    chat_history = state.get('messages', [])[:-1]
-    result = await self.router.adecide(
+    chat_history = self._window_history(
+      state.get('messages', []),
+      self.router_history_window
+    )
+    result = await self.planner.adecide(
       current_question=state['user_input'],
+      user_profile=state['user_profile'],
       documents = documents,
       chat_history = chat_history
     )
     return {
       "route": result.route,
-      "route_reason": result.route_reason
+      "route_reason": result.route_reason,
+      "answer_strategy": result.answer_strategy,
+      "retrieval_queries": result.retrieval_queries,
     }
 
   def _select_route(self, state:RAGGraphState) -> Literal['retriever', 'agent']:
@@ -166,25 +189,40 @@ class PolicyRagGraph:
 
   # Retriever
   def _retrieve_node(self, state: RAGGraphState):
-    documents = self.retriever.retrieve(query=state['user_input'],
+    documents = []
+    for query in state.get('retrieval_queries', []) or [state['user_input']]:
+      documents = self.retriever.retrieve(query=query,
                                    user_profile=state['user_profile'],
                                    exclude_expired = state['exclude_expired'])
+      if documents:
+        break
     return {"documents": documents}
 
   async def _aretrieve_node(self, state: RAGGraphState):
-    documents = await self.retriever.aretrieve(query=state['user_input'],
+    documents = []
+    for query in state.get('retrieval_queries', []) or [state['user_input']]:
+      documents = await self.retriever.aretrieve(query=query,
                                    user_profile=state['user_profile'],
                                    exclude_expired = state['exclude_expired'])
+      if documents:
+        break
     return {"documents": documents}
 
   # Agent
   def _agent_node(self, state: RAGGraphState):
     documents = state.get('documents', [])
-    chat_history = state.get('messages', [])[:-1]
+    chat_history = self._window_history(
+      state.get('messages', []),
+      self.agent_history_window
+    )
     result = self.agent.invoke(user_input = state['user_input'],
                              user_profile = state['user_profile'],
                              documents = documents,
-                             chat_history = chat_history)
+                             chat_history = chat_history,
+                             answer_strategy = state.get(
+                               'answer_strategy',
+                               'policy_recommendation'
+                             ))
     return {
       "answer": result,
       "messages": [AIMessage(content=result)]
@@ -193,11 +231,18 @@ class PolicyRagGraph:
 
   async def _aagent_node(self, state: RAGGraphState):
     documents = state.get('documents', [])
-    chat_history = state.get('messages', [])[:-1]
+    chat_history = self._window_history(
+      state.get('messages', []),
+      self.agent_history_window
+    )
     result = await self.agent.ainvoke(user_input = state['user_input'],
                              user_profile = state['user_profile'],
                              documents = documents,
-                             chat_history = chat_history)
+                             chat_history = chat_history,
+                             answer_strategy = state.get(
+                               'answer_strategy',
+                               'policy_recommendation'
+                             ))
     return {
       "answer": result,
       "messages": [AIMessage(content=result)]
@@ -294,10 +339,10 @@ class PolicyRagGraph:
       version="v2"
     ):
       if part['type'] == "updates":
-        router_update = part["data"].get("router")
+        planner_update = part["data"].get("planner")
         if (
-          router_update
-          and router_update.get("route") == "agent"
+          planner_update
+          and planner_update.get("route") == "agent"
         ):
           result_metadata = self.build_result(
             answer="",

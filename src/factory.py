@@ -7,12 +7,14 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_upstage import ChatUpstage, UpstageEmbeddings
 from langchain_anthropic import ChatAnthropic
 from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain_deepseek import ChatDeepSeek
+
 from src.checkpointer import create_sqlite_checkpointer
 from src.config import AppConfig
 from src.rag.graph import PolicyRagGraph
 from src.rag.nodes.retriever import PolicyRetriever
 from src.rag.nodes.agent import PolicyAgent
-from src.rag.nodes.router import PolicyRouter
+from src.rag.nodes.turn_planner import TurnPlanner
 
 
 CHAT_MODEL_CLASSES = {
@@ -20,7 +22,8 @@ CHAT_MODEL_CLASSES = {
     "openai": ChatOpenAI,
     "upstage": ChatUpstage,
     "anthropic": ChatAnthropic,
-    "ollama": ChatOllama
+    "ollama": ChatOllama,
+    "deepseek": ChatDeepSeek,
 }
 
 EMBEDDING_MODEL_CLASSES = {
@@ -40,6 +43,10 @@ def create_chat_model(provider: str, model_name: str, **kwargs):
             f"지원하지 않는 chat provider입니다: {provider}. "
             f"지원 provider: {supported}"
         ) from error
+    if provider == "deepseek":
+        extra_body = dict(kwargs.pop("extra_body", {}) or {})
+        extra_body.setdefault("thinking", {"type": "disabled"})
+        kwargs["extra_body"] = extra_body
     return model_class(model=model_name, **kwargs)
 
 
@@ -75,15 +82,17 @@ def build_rag_graph(config: AppConfig) -> PolicyRagGraph:
         model_name=config.llm.model,
     )
     agent = PolicyAgent(llm)
-    router = PolicyRouter(llm)
+    planner = TurnPlanner(llm)
 
     checkpointer = create_sqlite_checkpointer(
         config.path(config.data.conversation_db)
     )
 
     return PolicyRagGraph(
-        router=router,
+        planner=planner,
         retriever=retriever,
         agent=agent,
-        checkpointer=checkpointer
+        checkpointer=checkpointer,
+        router_history_window=config.rag.router.history_window,
+        agent_history_window=config.rag.agent.history_window,
     )

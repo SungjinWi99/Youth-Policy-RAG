@@ -20,7 +20,7 @@ class RetrieverConfig(BaseModel):
   search_k: int
 
 class LLMConfig(BaseModel):
-  provider: Literal['google', 'openai', 'upstage', 'anthropic']
+  provider: Literal['google', 'openai', 'upstage', 'anthropic', 'deepseek']
   model: str
 
 class EvaluationConfig(BaseModel):
@@ -34,12 +34,23 @@ class EvaluationConfig(BaseModel):
 class DatabaseConfig(BaseModel):
   echo: bool = False
 
+class RouterRuntimeConfig(BaseModel):
+  history_window: int = Field(default=6, ge=0)
+
+class AgentRuntimeConfig(BaseModel):
+  history_window: int = Field(default=10, ge=0)
+
+class RAGRuntimeConfig(BaseModel):
+  router: RouterRuntimeConfig = Field(default_factory=RouterRuntimeConfig)
+  agent: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
+
 class AppConfig(BaseModel):
   data: DataConfig
   retriever: RetrieverConfig
   llm: LLMConfig
   evaluation: EvaluationConfig
   database: DatabaseConfig
+  rag: RAGRuntimeConfig = Field(default_factory=RAGRuntimeConfig)
 
   def path(self, value: str) -> str:
       return str((PROJECT_ROOT / value).resolve())
