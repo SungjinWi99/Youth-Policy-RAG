@@ -9,7 +9,9 @@
 - Chroma 기반 semantic search
 - 사용자 프로필 기반 metadata filtering
 - 정책 신청 방법, 기간, 자격 조건 등 상세 metadata를 포함한 답변 생성
-- LangGraph `StateGraph` 기반 검색·생성 워크플로
+- LangGraph `StateGraph` 기반 TurnPlanner·검색·생성 워크플로
+- 현재 질문, 대화 기록, 활성 문서를 바탕으로 한 검색/재사용 분기
+- 답변 전략별 생성(`policy_recommendation`, `focused_followup`, `summary` 등)
 - 사용자 ID별 SQLite 대화 기록 및 연속 대화
 - FastAPI SSE 스트리밍 응답
 - SQLite 기반 사용자 프로필 CRUD
@@ -28,10 +30,12 @@ flowchart LR
     CLIENT["API Client / Streamlit"] --> FASTAPI["FastAPI"]
     FASTAPI --> USERDB["SQLite User Profile"]
     FASTAPI --> GRAPH["LangGraph RAG"]
-    GRAPH --> RETRIEVE["retrieve node"]
+    GRAPH --> PLANNER["TurnPlanner<br/>route + strategy + queries"]
+    PLANNER -->|"route=retriever"| RETRIEVE["retriever node"]
+    PLANNER -->|"route=agent"| AGENT["agent node"]
     RETRIEVE --> CHROMA
-    RETRIEVE --> GENERATE["generate node"]
-    GENERATE --> LLM["Chat Model"]
+    RETRIEVE --> AGENT
+    AGENT --> LLM["Chat Model"]
     GRAPH --> SSE["SSE metadata / chunks"]
 
     EVALDATA["Evaluation JSONL"] --> LANGFUSE["Langfuse Dataset"]
@@ -56,7 +60,8 @@ flowchart LR
 │   ├── ingest_chroma.py           # 문서 임베딩 및 Chroma 적재
 │   ├── generate_eval_dataset.py   # 평가 데이터 생성
 │   ├── evaluate_embedding_retrieval.py # 임베딩 검색 평가
-│   └── run_evaluation.py          # RAG 평가 실행
+│   ├── generate_eval_v1_500.sh    # 500건 평가 데이터 생성 예시
+│   └── run_evaluation.py          # Langfuse RAG 평가 실행
 ├── src/
 │   ├── chat/
 │   │   ├── models.py              # 대화 thread ID 저장 모델
@@ -66,7 +71,8 @@ flowchart LR
 │   ├── rag/
 │   │   ├── graph.py               # LangGraph workflow와 public API
 │   │   ├── nodes/
-│   │   │   ├── router.py          # 검색 필요 여부 분기
+│   │   │   ├── turn_planner.py     # 실행 경로·답변 전략·검색 질의 계획
+│   │   │   ├── router.py          # TurnPlanner 호환 alias
 │   │   │   ├── retriever.py       # 사용자 조건 기반 정책 검색
 │   │   │   └── agent.py           # prompt 구성과 답변 생성
 │   │   ├── state.py               # graph state schema
@@ -78,6 +84,7 @@ flowchart LR
 │   ├── dependencies.py            # FastAPI dependencies
 │   ├── eval.py                    # 평가 데이터 검증 및 evaluator
 │   ├── observability.py           # Langfuse tracing 설정
+│   ├── checkpointer.py            # SQLite LangGraph checkpointer
 │   └── factory.py                 # 모델·RAG factory
 └── tests/
 ```
@@ -104,8 +111,14 @@ retriever:
   search_k: 3
 
 llm:
-  provider: "upstage"
-  model: "solar-pro3"
+  provider: "deepseek"
+  model: "deepseek-v4-flash"
+
+rag:
+  router:
+    history_window: 6
+  agent:
+    history_window: 10
 
 evaluation:
   example_path: "data/eval/eval_v1_50.jsonl"
@@ -116,7 +129,17 @@ evaluation:
   max_concurrency: 3
 ```
 
-Langfuse tracing과 평가 실행에는 `.env`에 다음 값이 필요합니다.
+정책 수집과 현재 기본 모델 실행에는 provider별 API 키가 필요합니다. 예를 들어
+현재 `config.yaml` 설정을 그대로 사용할 때는 다음 값을 `.env`에 둡니다.
+
+```bash
+YOUTH_API_KEY=...
+UPSTAGE_API_KEY=...
+DEEPSEEK_API_KEY=...
+```
+
+Langfuse tracing은 선택 사항이며, 아래 값이 모두 설정되고
+`LANGFUSE_TRACING`이 활성화된 경우에만 동작합니다.
 
 ```bash
 LANGFUSE_TRACING=true
@@ -177,24 +200,37 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 
 ### LangGraph 워크플로
 
-`src/rag/graph.py`의 그래프는 이전 대화와 현재 활성 문서를 보고 새 검색이
-필요한지 먼저 판단합니다.
+`src/rag/graph.py`의 그래프는 매 턴 `TurnPlanner`가 현재 질문, 최근 대화,
+사용자 프로필, 현재 checkpoint에 저장된 활성 문서를 함께 보고 실행 계획을
+만듭니다.
 
 ```text
-START -> router -> retriever? -> agent -> END
+START -> planner -> retriever? -> agent -> END
 ```
 
-- `router`: 현재 질문, 대화 기록, 기존 검색 문서를 보고 `retriever` 또는 `agent`로 분기
+- `planner`: 구조화된 `TurnPlan`을 만들고 `route`, `answer_strategy`,
+  `retrieval_queries`, `route_reason`을 결정
+- `route="retriever"`: 새 정책 검색이 필요한 경우입니다. planner가 만든 검색 질의를
+  순서대로 시도하고, 문서를 찾으면 다음 질의는 생략합니다.
+- `route="agent"`: 활성 문서 재사용, 인사, 프로필 업데이트, 요약 등 새 검색 없이
+  답할 수 있는 경우입니다.
 - `retriever`: 사용자 프로필로 Chroma metadata filter를 만들고 정책 문서를 검색
-- `agent`: 검색 문서와 사용자 프로필을 prompt에 넣어 답변 생성
-- graph state: `user_input`, `user_profile`, `exclude_expired`, `messages`, `documents`, `route`, `answer`
+- `agent`: 검색 문서, 사용자 프로필, `answer_strategy`를 prompt에 넣어 답변 생성
+- 답변 전략은 `brief_reply`, `policy_recommendation`, `profile_update_response`,
+  `focused_followup`, `clarifying_question`, `summary`를 지원합니다.
+- planner에는 잘못된 계획을 보정하는 guard가 있어 검색 질의 누락, 문서 없는 후속 질문,
+  대화 없는 요약 요청을 안전한 기본 전략으로 바꿉니다.
+- graph state: `user_input`, `user_profile`, `exclude_expired`, `messages`, `documents`,
+  `route`, `route_reason`, `answer_strategy`, `retrieval_queries`, `answer`
 - conversation state: Human/AI 메시지를 사용자별 `thread_id`에 누적
 
 동기 호출, 비동기 호출, SSE 스트리밍 모두 같은 컴파일된 그래프를 사용합니다.
 사용자 프로필은 기존 SQLite DB에서 조회하고, 대화 상태는
 `data/sqlite/conversations.db`의 LangGraph SQLite checkpointer에 별도로
-저장합니다. `src/chat/models.py`의 `ConversationThread`가 사용자 ID별 thread ID를
-관리하므로, 대화 기록 삭제 후에는 새 thread ID로 다음 대화를 시작합니다.
+저장합니다. planner와 agent는 각각 최근 대화 6개와 10개를 사용하도록
+`config.yaml`에서 별도 window를 설정할 수 있습니다. `src/chat/models.py`의
+`ConversationThread`가 사용자 ID별 thread ID를 관리하므로, 대화 기록 삭제 후에는
+새 thread ID로 다음 대화를 시작합니다.
 사용자 프로필을 삭제하면 해당 사용자의 대화 checkpoint도 함께 삭제됩니다.
 
 ### Streamlit 데모
@@ -252,8 +288,16 @@ curl -N -X POST http://127.0.0.1:8000/chat \
   }'
 ```
 
-SSE 응답은 검색 context와 정책 ID를 담은 `metadata`, 답변 텍스트를 담은
-`chunk`, 완료를 알리는 `done` 이벤트 순서로 전달됩니다.
+SSE 응답은 검색 context와 정책 ID를 담은 `metadata`, 답변 텍스트 조각을 담은
+`chunk`, 완료를 알리는 `done` 이벤트로 전달됩니다.
+
+```text
+data: {"type":"metadata","data":{"contexts":[...],"retrieved_policy_ids":[...]}}
+
+data: {"type":"chunk","data":"답변 일부"}
+
+data: {"type":"done"}
+```
 
 ## RAG 평가
 
@@ -264,6 +308,14 @@ SSE 응답은 검색 context와 정책 ID를 담은 `metadata`, 답변 텍스트
 
 ```bash
 python -m scripts.generate_eval_dataset --sample-size 100 --overwrite
+```
+
+기본 생성 크기는 500건이며, 재현 가능한 생성을 위해 seed는 기본값 `42`를
+사용합니다. 여러 모델을 섞어 질문을 생성하려면
+`--generation-model PROVIDER/MODEL=WEIGHT` 옵션을 사용할 수 있습니다.
+
+```bash
+bash scripts/generate_eval_v1_500.sh
 ```
 
 Langfuse Dataset을 생성하거나 갱신하고, LangGraph RAG와 evaluator를 실행합니다.
