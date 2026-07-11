@@ -11,6 +11,7 @@ from src.policy.utils import REGION_NAMES
 
 DEFAULT_API_BASE_URL = os.getenv("YOUTH_RAG_API_URL", "http://127.0.0.1:8000")
 DEFAULT_TIMEOUT = 20
+CHAT_HISTORY_HEIGHT = 520
 
 
 def api_url(path: str) -> str:
@@ -294,31 +295,39 @@ def render_chat() -> None:
         help="끄면 신청 기간이 지난 정책도 검색 후보에 포함합니다.",
     )
 
-    if st.button("Clear chat"):
-        user_id = st.session_state.active_user_id.strip()
-        if user_id:
-            encoded_user_id = quote(user_id, safe="")
-            ok, data = request_json(
-                "DELETE",
-                f"/chat/{encoded_user_id}",
-            )
-            if not ok:
-                st.error("서버 대화 기록 삭제 실패")
-                st.json(data)
-                return
-        st.session_state.messages = []
-        st.success("대화 기록을 삭제했습니다.")
-
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if message["role"] == "assistant":
-                render_retrieval_metadata(
-                    message.get("contexts", []),
-                    message.get("retrieved_policy_ids", []),
+    chat_panel = st.container(border=True)
+    with chat_panel:
+        if st.button("Clear chat"):
+            user_id = st.session_state.active_user_id.strip()
+            if user_id:
+                encoded_user_id = quote(user_id, safe="")
+                ok, data = request_json(
+                    "DELETE",
+                    f"/chat/{encoded_user_id}",
                 )
+                if not ok:
+                    st.error("서버 대화 기록 삭제 실패")
+                    st.json(data)
+                    return
+            st.session_state.messages = []
+            st.success("대화 기록을 삭제했습니다.")
 
-    user_input = st.chat_input("청년정책 질문을 입력하세요")
+        message_panel = st.container(height=CHAT_HISTORY_HEIGHT)
+        with message_panel:
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+                    if message["role"] == "assistant":
+                        render_retrieval_metadata(
+                            message.get("contexts", []),
+                            message.get("retrieved_policy_ids", []),
+                        )
+
+        user_input = st.chat_input(
+            "청년정책 질문을 입력하세요",
+            key="chat_input",
+        )
+
     if not user_input:
         return
 
@@ -328,47 +337,49 @@ def render_chat() -> None:
         return
 
     st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    with message_panel:
+        with st.chat_message("user"):
+            st.markdown(user_input)
 
     answer = ""
     contexts: list[str] = []
     retrieved_policy_ids: list[str] = []
-    with st.chat_message("assistant"):
-        answer_placeholder = st.empty()
-        metadata_placeholder = st.empty()
-        try:
-            for event in stream_chat(
-                user_id=user_id,
-                user_input=user_input,
-                exclude_expired=st.session_state.exclude_expired,
-            ):
-                event_type = event.get("type")
-                if event_type == "metadata":
-                    metadata = event.get("data") or {}
-                    contexts = metadata.get("contexts") or []
-                    retrieved_policy_ids = (
-                        metadata.get("retrieved_policy_ids") or []
-                    )
-                    with metadata_placeholder.container():
-                        render_retrieval_metadata(
-                            contexts,
-                            retrieved_policy_ids,
+    with message_panel:
+        with st.chat_message("assistant"):
+            answer_placeholder = st.empty()
+            metadata_placeholder = st.empty()
+            try:
+                for event in stream_chat(
+                    user_id=user_id,
+                    user_input=user_input,
+                    exclude_expired=st.session_state.exclude_expired,
+                ):
+                    event_type = event.get("type")
+                    if event_type == "metadata":
+                        metadata = event.get("data") or {}
+                        contexts = metadata.get("contexts") or []
+                        retrieved_policy_ids = (
+                            metadata.get("retrieved_policy_ids") or []
                         )
-                elif event_type == "chunk":
-                    answer += event.get("data", "")
-                    answer_placeholder.markdown(answer)
-                elif event_type == "done":
-                    break
-        except requests.HTTPError as exc:
-            answer = f"API 오류: {exc.response.status_code} {exc.response.text}"
-            answer_placeholder.error(answer)
-        except requests.RequestException as exc:
-            answer = f"API 연결 실패: {exc}"
-            answer_placeholder.error(answer)
-        except (json.JSONDecodeError, ValueError) as exc:
-            answer = f"SSE 응답 파싱 실패: {exc}"
-            answer_placeholder.error(answer)
+                        with metadata_placeholder.container():
+                            render_retrieval_metadata(
+                                contexts,
+                                retrieved_policy_ids,
+                            )
+                    elif event_type == "chunk":
+                        answer += event.get("data", "")
+                        answer_placeholder.markdown(answer)
+                    elif event_type == "done":
+                        break
+            except requests.HTTPError as exc:
+                answer = f"API 오류: {exc.response.status_code} {exc.response.text}"
+                answer_placeholder.error(answer)
+            except requests.RequestException as exc:
+                answer = f"API 연결 실패: {exc}"
+                answer_placeholder.error(answer)
+            except (json.JSONDecodeError, ValueError) as exc:
+                answer = f"SSE 응답 파싱 실패: {exc}"
+                answer_placeholder.error(answer)
 
     st.session_state.messages.append(
         {
