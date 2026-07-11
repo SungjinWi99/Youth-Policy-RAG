@@ -1,3 +1,7 @@
+app:
+  release: "v0.1.0"
+  environment: "development"
+
 data:
   raw: "data/raw/youth_policies.json"
   sqlite_db: "data/sqlite/youth_policies.db"

@@ -9,6 +9,7 @@ from langfuse import get_client
 from tqdm import tqdm
 
 from src.config import load_config
+from src.observability import initialize_langfuse, shutdown_langfuse
 from src.eval import build_langfuse_evaluators, load_evaluation_items
 from src.factory import build_rag_graph, create_chat_model
 
@@ -245,7 +246,7 @@ def main():
         os.environ.setdefault("LANGFUSE_TRACING", "true")
 
     config = load_config()
-    langfuse = get_client()
+    langfuse = initialize_langfuse(config) or get_client()
     dataset = ensure_dataset(
         langfuse,
         config.evaluation.dataset_name,
@@ -308,7 +309,7 @@ def main():
         print(f"Langfuse UI: {get_langfuse_ui_url()}")
     finally:
         rag.close()
-        langfuse.shutdown()
+        shutdown_langfuse()
 
 
 if __name__ == "__main__":

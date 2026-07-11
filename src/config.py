@@ -1,7 +1,7 @@
 from typing import Literal
 from functools import lru_cache
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -34,17 +34,22 @@ class EvaluationConfig(BaseModel):
 class DatabaseConfig(BaseModel):
   echo: bool = False
 
-class RouterRuntimeConfig(BaseModel):
+class PlannerRuntimeConfig(BaseModel):
   history_window: int = Field(default=6, ge=0)
 
 class AgentRuntimeConfig(BaseModel):
   history_window: int = Field(default=10, ge=0)
 
 class RAGRuntimeConfig(BaseModel):
-  router: RouterRuntimeConfig = Field(default_factory=RouterRuntimeConfig)
+  planner: PlannerRuntimeConfig = Field(default_factory=PlannerRuntimeConfig)
   agent: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
 
+class ApplicationConfig(BaseModel):
+  release: str = Field(min_length=1, max_length=200)
+  environment: str = Field(pattern=r"^[a-z0-9_-]{1,40}$")
+
 class AppConfig(BaseModel):
+  app: ApplicationConfig
   data: DataConfig
   retriever: RetrieverConfig
   llm: LLMConfig

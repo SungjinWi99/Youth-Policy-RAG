@@ -150,7 +150,7 @@ class PolicyRagGraph:
     documents = state.get('documents', [])
     chat_history = self._window_history(
       state.get('messages', []),
-      self.router_history_window
+      self.planner_history_window
     )
     result = self.planner.decide(
       current_question=state['user_input'],
@@ -169,7 +169,7 @@ class PolicyRagGraph:
     documents = state.get('documents', [])
     chat_history = self._window_history(
       state.get('messages', []),
-      self.router_history_window
+      self.planner_history_window
     )
     result = await self.planner.adecide(
       current_question=state['user_input'],

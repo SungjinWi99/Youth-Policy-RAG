@@ -2,8 +2,11 @@ import os
 from collections.abc import Sequence
 from typing import Any
 
+from src.config import AppConfig
+
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
+_langfuse_client: Any | None = None
 
 
 def _is_enabled(value: str | None) -> bool:
@@ -16,6 +19,24 @@ def langfuse_tracing_enabled() -> bool:
         and bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
         and bool(os.getenv("LANGFUSE_SECRET_KEY"))
     )
+
+
+def initialize_langfuse(config: AppConfig) -> Any | None:
+    """Initialize the process-wide Langfuse client before callbacks are built."""
+    global _langfuse_client
+
+    if not langfuse_tracing_enabled():
+        return None
+    if _langfuse_client is not None:
+        return _langfuse_client
+
+    from langfuse import Langfuse
+
+    _langfuse_client = Langfuse(
+        release=config.app.release,
+        environment=config.app.environment,
+    )
+    return _langfuse_client
 
 
 def build_langfuse_config(
@@ -59,18 +80,15 @@ def build_langfuse_config(
 
 
 def flush_langfuse() -> None:
-    if not langfuse_tracing_enabled():
+    if _langfuse_client is None:
         return
-
-    from langfuse import get_client
-
-    get_client().flush()
+    _langfuse_client.flush()
 
 
 def shutdown_langfuse() -> None:
-    if not langfuse_tracing_enabled():
+    global _langfuse_client
+
+    if _langfuse_client is None:
         return
-
-    from langfuse import get_client
-
-    get_client().shutdown()
+    _langfuse_client.shutdown()
+    _langfuse_client = None
