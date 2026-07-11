@@ -28,14 +28,14 @@ class PolicyRagGraph:
                retriever: PolicyRetriever,
                agent: PolicyAgent,
                checkpointer: AsyncCompatibleSqliteSaver,
-               router_history_window: int = 6,
+               planner_history_window: int = 6,
                agent_history_window: int = 10,
                ):
     self.planner = planner
     self.retriever = retriever
     self.agent = agent
     self.checkpointer = checkpointer
-    self.router_history_window = router_history_window
+    self.planner_history_window = planner_history_window
     self.agent_history_window = agent_history_window
     self.graph = self._compile_graph()
 

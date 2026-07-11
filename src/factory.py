@@ -93,6 +93,6 @@ def build_rag_graph(config: AppConfig) -> PolicyRagGraph:
         retriever=retriever,
         agent=agent,
         checkpointer=checkpointer,
-        router_history_window=config.rag.router.history_window,
+        planner_history_window=config.rag.planner.history_window,
         agent_history_window=config.rag.agent.history_window,
     )
