@@ -16,8 +16,8 @@ retriever:
   search_k: 3
 
 llm:
-  provider: "deepseek"
-  model: "deepseek-v4-flash"
+  provider: "upstage"
+  model: "solar-pro3"
 
 rag:
   planner:

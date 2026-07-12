@@ -1,0 +1,116 @@
+version: 1
+severity_scale:
+  critical:
+    description: 잘못된 정책 정보를 사실로 제시하거나 신청 불가능한 정책을 추천해 사용자의 의사결정에 직접적인 피해를 줄 수 있다.
+  high:
+    description: 적합한 정책을 놓치거나 잘못된 정책으로 안내해 서비스의 핵심 목적을 크게 훼손한다.
+  medium:
+    description: 답변 완결성이나 대화 흐름을 해쳐 추가 질문 또는 재탐색이 필요해진다.
+  low:
+    description: 정보의 정확성보다 편의성과 간결성을 주로 저해한다.
+
+failure_taxonomies:
+  routing:
+    purpose: 검색·재사용·명확화 중 다음 행동을 결정하는 기능
+    failure_types:
+      topic_shift_missed:
+        label: 맥락 전환 실패
+        description: 새로운 정책에 대한 질문을 기존 정책의 후속 질문으로 처리한다.
+        user_impact: 사용자가 새롭게 요청한 정책을 검색하지 못한다.
+        severity: high
+      unnecessary_retrieval:
+        label: 불필요 검색
+        description: 활성 정책으로 답할 수 있는 세부 질문에 새 검색을 수행한다.
+        user_impact: 불필요한 검색 비용이 소모되고, 대화 흐름이 유지되지 못할 수 있다.
+        severity: low
+      unnecessary_clarification:
+        label: 불필요 명확화
+        description: 검색 가능한 사용자 질문에 불필요한 추가 확인 정보를 요구한다.
+        user_impact: 추가 대화 비용이 발생하고, 사용자가 같은 목적을 다시 설명해야 한다.
+        severity: medium
+      missing_retrieval:
+        label: 검색 생략
+        description: 검색이 필요한 상황이지만 검색을 수행하지 않음.
+        user_impact: 사용자가 다시 검색을 요구해야 하거나, 잘못된 답변 생성으로 이어질 수 있다.
+        severity: medium
+      missing_clarification:
+        label: 명확화 생략
+        description: 문제 상황과 정책 분야가 불명확한데 clarification 없이 임의로 검색 또는 추천한다.
+        user_impact: 관련성이 낮은 추천을 받는다.
+        severity: high
+      wrong_answer_strategy:
+        label: 답변 전략 선택 오류
+        description: 현재 대화 맥락에 맞지 않는 답변 전략을 선택한다.
+        user_impact: 답변이 자연스럽지 못하고, 사용자의 요청과 다른 형태로 제공된다.
+        severity: medium
+  retrieval:
+    purpose: 사용자 질문과 프로필 조건에 맞는 정책 문서를 검색하고, 답변 생성에 필요한 근거 문서를 제공하는 기능
+    failure_types:
+      relevant_policy_missed:
+        label: 관련 정책 누락
+        description: 현재 검색 대상에 적합한 정책이 존재하지만 검색 결과에 포함되지 않음. (낮은 Recall)
+        user_impact: 사용자에게 필요한 정책을 추천받지 못한다.
+        severity: high
+      irrelevant_result:
+        label: 관련 없는 검색 결과
+        description: 사용자의 질문, 문제 상황, 프로필과 관련성이 낮은 정책이 검색된다. (낮은 Precision)
+        user_impact: 엉뚱한 정책을 추천 받게 된다.
+        severity: high
+      query_constraint_loss:
+        label: 검색 조건 누락
+        description: 사용자가 명시한 지역, 정책 분야, 목적, 대상 등의 조건이 검색 질의에 충분히 반영되지 않는다.
+        user_impact: 질문 조건과 맞지 않는 정책이 검색된다.
+        severity: high
+      metadata_filter_missed:
+        label: 프로필 필터 미적용
+        description: 사용자의 지역, 나이, 소득 또는 신청 마감 제외 조건이 검색 필터에 적용되지 않거나 잘못 적용된다.
+        user_impact: 사용자가 신청할 수 없는 정책이 검색된다.
+        severity: critical
+      metadata_filter_overconstrained:
+        label: 과도한 프로필 필터
+        description: 프로필이나 정책 메타데이터가 불완전한 상황에서 필터가 지나치게 엄격하게 적용되어 관련 정책까지 제외된다.
+        user_impact: 실제로 검토할 가치가 있는 정책을 추천받지 못한다.
+        severity: high
+  generation:
+    purpose: 검색된 정책 문서, 사용자 프로필, 대화 이력과 현재 질문을 이용해 적절한 답변을 생성하는 기능
+    failure_types:
+      unsupported_claim:
+        label: 근거 없는 정보 생성
+        description: 검색 문서나 사용자 프로필에 없는 정보를 사실처럼 답변한다.
+        user_impact: 잘못된 정책 정보를 신뢰하게 된다.
+        severity: critical
+      relevant_context_ignored:
+        label: 검색 근거 미사용
+        description: 질문에 답할 수 있는 정책 문서가 제공됐지만, 해당 정보를 사용하지 않거나 정보가 없다고 답변한다.
+        user_impact: 검색에는 성공했지만 필요한 답변을 얻지 못한다.
+        severity: high
+      irrelevant_context_used:
+        label: 관련 없는 근거 사용
+        description: 현재 질문과 관련 없는 검색 문서를 억지로 사용해 답변한다.
+        user_impact: 질문과 맞지 않는 정책 설명을 받는다.
+        severity: high
+      request_detail_omitted:
+        label: 요청 정보 누락
+        description: 사용자가 신청 기간, 제출 서류, 지원 금액 등 특정 정보를 요청했지만 해당 정보를 제공하지 않는다.
+        user_impact: 필요한 정보를 얻기 위해 같은 질문을 반복해야 한다.
+        severity: medium
+      context_reference_lost:
+        label: 컨텍스트 참조 실패
+        description: 아까 것, 2번째 정책 등의 참조 표현을 현재 활성 정책과 연결하지 못한다.
+        user_impact: 사용자가 질문한 정책에 대한 정보를 제공하지 못한다.
+        severity: high
+      no_result_handling_failure:
+        label: 검색 결과 없음 처리 실패
+        description: 관련 정책 문서가 없는데 정보를 만들어내거나, 필요한 추가 질문이나 정보 부족 안내 없이 답변한다.
+        user_impact: 근거 없는 답변을 받거나 다음 행동을 알 수 없다.
+        severity: high
+      unnecessary_repetition:
+        label: 불필요한 설명 반복
+        description: 이미 설명한 정책 정보를 후속 질문에서 필요 이상으로 반복한다.
+        user_impact: 대화가 길어지고 원하는 정보를 찾기 어려워진다.
+        severity: low
+      answer_strategy_violation:
+        label: 답변 전략 불이행
+        description: 현재 질문에 요구되는 답변 방식과 다르게 응답한다.
+        user_impact: 답변이 자연스럽지 못하고, 사용자의 요청과 다른 형태로 제공된다.
+        severity: medium

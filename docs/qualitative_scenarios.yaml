@@ -1,0 +1,137 @@
+version: 1
+scenarios:
+  - id: routing-topic-shift-001
+    title: 활성 정책에서 새 정책 분야로 전환
+    priority: P0
+    target_failures: {primary: routing.topic_shift_missed, secondary: [retrieval.relevant_policy_missed, generation.irrelevant_context_used]}
+    profile: {age: 25, region: 서울, income: 미입력}
+    turns: ['청년월세지원을 받을 수 있어?', '그럼 취업 준비할 때 받을 수 있는 지원도 찾아줘.']
+    observe: [두 번째 턴을 월세지원의 후속 질문이 아닌 새 취업지원 탐색으로 처리하는가., 취업지원 관련 근거가 제시되는가.]
+    fail_when: [월세지원만 반복하거나 취업지원 검색 없이 답한다.]
+
+  - id: routing-clarification-001
+    title: 검색 가능한 요청에 불필요한 재질문을 하지 않음
+    priority: P2
+    target_failures: {primary: routing.unnecessary_clarification, secondary: [generation.answer_strategy_violation]}
+    profile: {age: 27, region: 부산, income: 미입력}
+    turns: ['부산에서 취업 준비하는 청년에게 도움이 되는 정책 찾아줘.']
+    observe: [이미 있는 지역과 목적만으로 우선 탐색을 시도하는가.]
+    fail_when: [필수적이지 않은 정보부터 요구하고 정책 탐색이나 유용한 안내를 하지 않는다.]
+
+  - id: routing-missing-clarification-001
+    title: 목적이 전혀 불명확한 요청은 섣불리 추천하지 않음
+    priority: P1
+    target_failures: {primary: routing.missing_clarification, secondary: [retrieval.irrelevant_result]}
+    profile: {age: 미입력, region: 미입력, income: 미입력}
+    turns: ['나한테 되는 지원금 있어?']
+    observe: [최소한의 프로필 또는 필요 분야를 확인하는가.]
+    fail_when: [지역·나이·목적을 모르는 상태에서 특정 정책을 적합하다고 단정한다.]
+
+  - id: retrieval-recall-001
+    title: 명시된 지역과 목적의 정책을 찾음
+    priority: P0
+    target_failures: {primary: retrieval.relevant_policy_missed, secondary: [retrieval.query_constraint_loss]}
+    profile: {age: 24, region: 서울, income: 미입력}
+    turns: ['서울에서 이사할 때 주거비 부담을 줄여주는 청년 정책을 찾아줘.']
+    observe: [서울·청년·이사 또는 주거비라는 핵심 조건을 반영한 관련 문서가 검색되는가.]
+    fail_when: [코퍼스에 관련 정책이 있음에도 무관한 분야만 제시하거나 결과 없음을 선언한다.]
+
+  - id: retrieval-precision-001
+    title: 유사 표현의 무관 정책을 걸러냄
+    priority: P0
+    target_failures: {primary: retrieval.irrelevant_result, secondary: [generation.irrelevant_context_used]}
+    profile: {age: 26, region: 서울, income: 미입력}
+    turns: ['서울 청년 면접 정장 대여 지원을 찾고 있어.']
+    observe: [주거·창업 등 지원이라는 단어만 겹치는 정책이 핵심 추천이 되지 않는가.]
+    fail_when: [면접 또는 정장 대여와 관계없는 정책을 적합한 결과로 추천한다.]
+
+  - id: retrieval-constraint-001
+    title: 지역과 정책 목적을 동시에 보존
+    priority: P0
+    target_failures: {primary: retrieval.query_constraint_loss, secondary: [retrieval.irrelevant_result]}
+    profile: {age: 29, region: 대전, income: 미입력}
+    turns: ['대전에서 창업 초기 비용을 지원받을 수 있는 청년 정책만 알려줘.']
+    observe: [대전과 창업 초기 비용이라는 두 조건이 결과에 반영되는가.]
+    fail_when: [다른 지역 정책 또는 취업·주거 정책을 핵심 답으로 제시한다.]
+
+  - id: retrieval-profile-filter-001
+    title: 지역 프로필과 다른 정책을 추천하지 않음
+    priority: P0
+    target_failures: {primary: retrieval.metadata_filter_missed, secondary: [generation.unsupported_claim]}
+    profile: {age: 25, region: 부산, income: 미입력}
+    turns: ['청년 주거 지원 정책 추천해줘.']
+    observe: [부산 거주자 조건에 맞지 않는 지역 한정 정책을 추천하지 않는가.]
+    fail_when: [다른 지역 전용 정책을 부산 거주자에게 신청 가능하다고 안내한다.]
+
+  - id: retrieval-expiration-filter-001
+    title: 신청 마감 제외 토글을 적용
+    priority: P0
+    setup: {exclude_expired_policies: true}
+    target_failures: {primary: retrieval.metadata_filter_missed, secondary: [generation.unsupported_claim]}
+    profile: {age: 25, region: 서울, income: 미입력}
+    turns: ['지금 신청할 수 있는 서울 청년 정책을 알려줘.']
+    observe: [마감된 정책이 결과와 답변에서 제외되는가.]
+    fail_when: [마감된 정책을 현재 신청 가능한 정책으로 추천한다.]
+
+  - id: retrieval-overfilter-001
+    title: 불완전한 프로필 때문에 관련 정책을 모두 버리지 않음
+    priority: P1
+    target_failures: {primary: retrieval.metadata_filter_overconstrained, secondary: [retrieval.relevant_policy_missed]}
+    profile: {age: 25, region: 서울, income: 미입력}
+    turns: ['소득 조건을 모르겠는데 서울 청년 주거 지원 정책을 찾아줘.']
+    observe: [소득 정보가 없다는 이유만으로 관련 정책을 전부 제외하지 않는가.]
+    fail_when: [확인 가능한 정책이 있는데도 프로필 부족만을 이유로 결과가 없다고 답한다.]
+
+  - id: generation-grounding-001
+    title: 문서에 없는 지원 조건을 만들지 않음
+    priority: P0
+    target_failures: {primary: generation.unsupported_claim, secondary: [generation.request_detail_omitted]}
+    profile: {age: 25, region: 서울, income: 미입력}
+    turns: ['서울 청년 주거 지원 정책을 찾아줘.', '방금 말한 정책은 지원 금액이 얼마고 신청 서류는 뭐야?']
+    observe: [활성 문서에 있는 정보만 구체적으로 말하는가., 없는 항목은 모른다고 밝히거나 확인 경로를 안내하는가.]
+    fail_when: [지원 금액·서류·자격 조건을 근거 없이 단정한다.]
+
+  - id: generation-context-reference-001
+    title: 지시 표현을 방금 안내한 정책과 연결
+    priority: P0
+    target_failures: {primary: generation.context_reference_lost, secondary: [routing.unnecessary_retrieval]}
+    profile: {age: 24, region: 서울, income: 미입력}
+    turns: ['서울 청년 주거 지원 정책을 하나 알려줘.', '그 정책은 언제까지 신청할 수 있어?']
+    observe: [두 번째 턴의 그 정책을 직전 추천 정책으로 해석하는가.]
+    fail_when: [직전 정책을 잊고 엉뚱한 정책을 설명하거나 불필요하게 새 검색을 한다.]
+
+  - id: generation-evidence-use-001
+    title: 검색된 근거에서 요청한 세부 정보를 추출
+    priority: P1
+    target_failures: {primary: generation.relevant_context_ignored, secondary: [generation.request_detail_omitted]}
+    profile: {age: 26, region: 서울, income: 미입력}
+    turns: ['서울 청년 취업 지원 정책을 찾아줘.', '그중 신청 방법이 적힌 정책의 신청 방법만 짧게 알려줘.']
+    observe: [검색 문서에 신청 방법이 있으면 그 정보를 사용해 짧게 답하는가.]
+    fail_when: [관련 정보가 문서에 있는데도 정보가 없다고 하거나 질문과 무관한 내용을 반복한다.]
+
+  - id: generation-no-result-001
+    title: 검색 결과가 없을 때 정직하고 다음 행동을 안내
+    priority: P0
+    target_failures: {primary: generation.no_result_handling_failure, secondary: [generation.unsupported_claim]}
+    profile: {age: 25, region: 서울, income: 미입력}
+    turns: ['서울 청년이 달 기지 이주비를 지원받는 정책이 있어?']
+    observe: [코퍼스에 근거가 없을 때 정책을 지어내지 않고 범위 한계 또는 대체 탐색 방법을 알리는가.]
+    fail_when: [존재 여부나 지원 내용을 근거 없이 만들어 답한다.]
+
+  - id: generation-nonrepetition-001
+    title: 후속 질문에는 새 정보에 집중
+    priority: P2
+    target_failures: {primary: generation.unnecessary_repetition, secondary: [generation.answer_strategy_violation]}
+    profile: {age: 25, region: 서울, income: 미입력}
+    turns: ['서울 청년 주거 지원 정책을 알려줘.', '그 정책의 신청 기간만 다시 알려줘.']
+    observe: [신청 기간 중심으로 답하고 이미 안내한 전체 정책 설명을 불필요하게 반복하지 않는가.]
+    fail_when: [요청한 정보보다 기존 정책 소개를 주로 반복한다.]
+
+  - id: generation-answer-strategy-001
+    title: 프로필 수정 요청을 정책 검색으로 오해하지 않음
+    priority: P1
+    target_failures: {primary: generation.answer_strategy_violation, secondary: [routing.wrong_answer_strategy]}
+    profile: {age: 25, region: 서울, income: 미입력}
+    turns: ['내 지역을 인천으로 바꿔줘.']
+    observe: [프로필 변경 사실을 확인하고 불필요한 정책 추천을 하지 않는가.]
+    fail_when: [프로필을 변경하지 않거나 변경 요청 대신 정책 검색 결과를 답한다.]
