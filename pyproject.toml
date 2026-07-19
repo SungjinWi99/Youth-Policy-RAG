@@ -1,0 +1,43 @@
+[project]
+name = "youth-policy-rag"
+version = "0.1.0"
+description = "User-profile-aware youth policy RAG system"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "chromadb>=1.5.0",
+    "fastapi>=0.115.0",
+    "kiwipiepy>=0.22.0",
+    "langchain-anthropic>=1.4.0",
+    "langchain-chroma>=1.0.0",
+    "langchain-community>=0.3.31,<0.4",
+    "langchain-core>=1.0.0",
+    "langchain-deepseek>=1.1.0",
+    "langchain-google-genai>=4.0.0",
+    "langchain-ollama>=1.0.0",
+    "langchain-openai>=1.0.0",
+    "langchain-upstage>=0.7.0",
+    "langfuse>=4.10.0",
+    "langgraph>=1.1.0",
+    "langgraph-checkpoint-sqlite>=3.0.0",
+    "python-dotenv>=1.0.1",
+    "PyYAML>=6.0.0",
+    "ragas==0.4.3",
+    "requests>=2.31.0",
+    "sqlmodel>=0.0.22",
+    "streamlit>=1.36.0",
+    "tqdm>=4.66.0",
+    "uvicorn>=0.30.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = [".", "src"]
+testpaths = ["tests"]
