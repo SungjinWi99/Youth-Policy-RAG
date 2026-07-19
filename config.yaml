@@ -1,5 +1,5 @@
 app:
-  release: "v0.1.0"
+  release: "v0.1.2"
   environment: "development"
 
 data:
@@ -13,11 +13,16 @@ retriever:
   provider: "upstage"
   query_model: "solar-embedding-1-large-query"
   passage_model: "solar-embedding-1-large-passage"
+  mode: "hybrid"
   search_k: 3
+  dense_candidate_k: 10
+  bm25_candidate_k: 50
+  hybrid_dense_weight: 0.65
+  hybrid_rrf_k: 1
 
 llm:
-  provider: "upstage"
-  model: "solar-pro3"
+  provider: "deepseek"
+  model: "deepseek-v4-flash"
 
 rag:
   planner:

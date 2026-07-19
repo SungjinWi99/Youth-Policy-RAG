@@ -11,6 +11,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from src.rag.graph import PolicyRagGraph
 from src.rag.nodes.agent import PolicyAgent
+from src.rag.nodes.retriever import RetrievalRequest
 from src.rag.prompts import ANSWER_STRATEGY_INSTRUCTIONS
 from src.rag.nodes.turn_planner import TurnPlan
 
@@ -51,20 +52,16 @@ class FakeRetriever:
         self.documents_by_query = documents_by_query
         self.calls = []
 
-    def retrieve(self, *, query, user_profile, exclude_expired):
-        self.calls.append({
-            "query": query,
-            "user_profile": user_profile,
-            "exclude_expired": exclude_expired,
-        })
+    def retrieve(self, request: RetrievalRequest):
+        self.calls.append(request)
         if self.documents_by_query is not None:
-            return self.documents_by_query.get(query, [])
+            return self.documents_by_query.get(request.query, [])
         return self.documents
 
-    async def aretrieve(self, **kwargs):
-        self.calls.append(kwargs)
+    async def aretrieve(self, request: RetrievalRequest):
+        self.calls.append(request)
         if self.documents_by_query is not None:
-            return self.documents_by_query.get(kwargs["query"], [])
+            return self.documents_by_query.get(request.query, [])
         return self.documents
 
 
@@ -84,7 +81,7 @@ class FakeAgent:
 def build_graph(
     *,
     retriever=None,
-    router_history_window=6,
+    planner_history_window=6,
     agent_history_window=10,
 ):
     documents = [
@@ -105,7 +102,7 @@ def build_graph(
         retriever=retriever,
         agent=agent,
         checkpointer=InMemorySaver(),
-        router_history_window=router_history_window,
+        planner_history_window=planner_history_window,
         agent_history_window=agent_history_window,
     )
     return graph, planner, retriever, agent
@@ -218,14 +215,14 @@ def test_generate_answer_retrieves_then_returns_public_result():
     assert result.retrieved_policy_ids == ["POLICY-001"]
     assert "서울 청년 월세 지원 정책입니다." in result.contexts[0]
     assert planner.calls[0]["documents"] == []
-    assert retriever.calls == [{
-        "query": "월세 지원 정책을 알려줘.",
-        "user_profile": {
+    assert retriever.calls == [RetrievalRequest(
+        query="월세 지원 정책을 알려줘.",
+        user_profile={
             "age": 27,
             "region": "서울",
         },
-        "exclude_expired": True,
-    }]
+        exclude_expired=True,
+    )]
     assert agent.calls[0]["documents"] == retriever.documents
     assert agent.calls[0]["answer_strategy"] == "policy_recommendation"
 
@@ -270,7 +267,7 @@ def test_agenerate_answer_uses_async_nodes():
 
     assert result.answer == "답변: 비동기 질문"
     assert result.retrieved_policy_ids == ["POLICY-001"]
-    assert retriever.calls[0]["query"] == "비동기 질문"
+    assert retriever.calls[0].query == "비동기 질문"
     assert agent.calls[0]["user_input"] == "비동기 질문"
 
 
@@ -319,7 +316,7 @@ def test_retrieve_node_uses_fallback_queries_until_documents_found():
     })
 
     assert update == {"documents": documents}
-    assert [call["query"] for call in retriever.calls] == [
+    assert [call.query for call in retriever.calls] == [
         "서울 청년 월세 지원 정책",
         "서울 청년 주거 안정 지원 정책",
     ]
@@ -327,7 +324,7 @@ def test_retrieve_node_uses_fallback_queries_until_documents_found():
 
 def test_router_and_agent_history_windows_are_applied_separately():
     graph, planner, _, agent = build_graph(
-        router_history_window=2,
+        planner_history_window=2,
         agent_history_window=3,
     )
     messages = [

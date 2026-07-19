@@ -2,6 +2,7 @@ from collections.abc import Sequence
 
 from langchain_core.documents import Document
 
+from src.policy.utils import REGION_NAME_TO_CODE, extract_sido_codes
 from src.rag.state import RAGUserProfile
 
 
@@ -52,6 +53,32 @@ def format_age_condition(metadata: dict) -> str:
     )
 
 
+def format_yes_no(value) -> str:
+    return {
+        "Y": "예",
+        "N": "아니오",
+    }.get(str(value or "").upper(), "미제공")
+
+
+def format_support_scale(value) -> str:
+    return "미제공" if value in (None, "", "0", 0) else str(value)
+
+
+def format_supported_regions(metadata: dict) -> str:
+    supported_codes = extract_sido_codes(metadata.get("zipCd"))
+    supported_regions = [
+        region_name
+        for region_name, region_code in REGION_NAME_TO_CODE.items()
+        if region_code in supported_codes
+    ]
+
+    if len(supported_regions) == len(REGION_NAME_TO_CODE):
+        return "전국"
+    if not supported_regions:
+        return "미제공"
+    return ", ".join(supported_regions)
+
+
 def format_user_profile(user: RAGUserProfile) -> str:
     return "\n".join([
         f"나이: {format_optional(user.get('age'))}",
@@ -74,7 +101,7 @@ def format_doc(doc: Document, index: int) -> str:
 중분류: {format_context_value(metadata.get("mclsfNm"))}
 주관기관: {format_context_value(metadata.get("sprvsnInstCdNm"))}
 운영기관: {format_context_value(metadata.get("operInstCdNm"))}
-지역: {format_context_value(metadata.get("region"))}
+지원 지역: {format_supported_regions(metadata)}
 지원 연령: {format_age_condition(metadata)}
 소득 조건: {format_income_condition(metadata)}
 사업 기간: {format_context_range(metadata.get("bizPrdBgngYmd"), metadata.get("bizPrdEndYmd"))}
@@ -84,6 +111,9 @@ def format_doc(doc: Document, index: int) -> str:
 신청 URL: {format_context_value(metadata.get("aplyUrlAddr"))}
 참고 URL 1: {format_context_value(metadata.get("refUrlAddr1"))}
 참고 URL 2: {format_context_value(metadata.get("refUrlAddr2"))}
+지원 규모 제한: {format_yes_no(metadata.get("sprtSclLmtYn"))}
+지원 규모: {format_support_scale(metadata.get("sprtSclCnt"))}
+선착순 여부: {format_yes_no(metadata.get("sprtArvlSeqYn"))}
 참여 대상: {format_context_value(metadata.get("ptcpPrpTrgtCn"))}
 추가 신청 자격: {format_context_value(metadata.get("addAplyQlfcCndCn"))}
 제출 서류: {format_context_value(metadata.get("sbmsnDcmntCn"))}

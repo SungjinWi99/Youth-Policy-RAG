@@ -15,7 +15,10 @@ from src.rag.state import (
     RAGResult,
     RAGUserProfile,
 )
-from src.rag.nodes.retriever import PolicyRetriever
+from src.rag.nodes.retriever import (
+    PolicyRetriever,
+    RetrievalRequest,
+)
 from src.rag.nodes.agent import PolicyAgent
 from src.rag.nodes.turn_planner import TurnPlanner
 from src.checkpointer import AsyncCompatibleSqliteSaver
@@ -191,9 +194,11 @@ class PolicyRagGraph:
   def _retrieve_node(self, state: RAGGraphState):
     documents = []
     for query in state.get('retrieval_queries', []) or [state['user_input']]:
-      documents = self.retriever.retrieve(query=query,
-                                   user_profile=state['user_profile'],
-                                   exclude_expired = state['exclude_expired'])
+      documents = self.retriever.retrieve(RetrievalRequest(
+        query=query,
+        user_profile=state['user_profile'],
+        exclude_expired=state['exclude_expired'],
+      ))
       if documents:
         break
     return {"documents": documents}
@@ -201,9 +206,11 @@ class PolicyRagGraph:
   async def _aretrieve_node(self, state: RAGGraphState):
     documents = []
     for query in state.get('retrieval_queries', []) or [state['user_input']]:
-      documents = await self.retriever.aretrieve(query=query,
-                                   user_profile=state['user_profile'],
-                                   exclude_expired = state['exclude_expired'])
+      documents = await self.retriever.aretrieve(RetrievalRequest(
+        query=query,
+        user_profile=state['user_profile'],
+        exclude_expired=state['exclude_expired'],
+      ))
       if documents:
         break
     return {"documents": documents}

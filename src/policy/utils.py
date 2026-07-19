@@ -243,3 +243,49 @@ def build_region_metadata(zip_cd: str | None) -> dict[str, bool]:
         region_metadata_key(code): code in policy_region_codes
         for code in REGION_CODES
     }
+
+
+POLICY_METADATA_LABELS: dict[str, str] = {
+    "plcyNo": "정책번호",
+    "lclsfNm": "대분류",
+    "mclsfNm": "중분류",
+    "refUrlAddr1": "참고URL1",
+    "refUrlAddr2": "참고URL2",
+    "aplyUrlAddr": "신청URL",
+    "sprvsnInstCdNm": "주관기관명",
+    "operInstCdNm": "운영기관명",
+    "bizPrdBgngYmd": "사업시작일",
+    "bizPrdEndYmd": "사업종료일",
+    "bizPrdEtcCn": "사업기간기타설명",
+    "aplyYmd": "원문신청기간",
+    "plcyAplyMthdCn": "신청방법",
+    "ptcpPrpTrgtCn": "참여대상",
+    "addAplyQlfcCndCn": "추가신청자격",
+    "sbmsnDcmntCn": "제출서류",
+    "srngMthdCn": "심사방법",
+    "registrationInstitution": "등록기관명",
+    "zipCd": "지원지역코드",
+    "jobCd": "직업코드",
+    "mrgSttsCd": "혼인상태코드",
+    "sprtTrgtMinAge": "지원최소연령",
+    "sprtTrgtMaxAge": "지원최대연령",
+    "agePolicy": "연령조건유형",
+    "earnMinAmt": "최소소득기준",
+    "earnMaxAmt": "최대소득기준",
+    "incomePolicy": "소득조건유형",
+    "applicationPolicy": "신청기간유형",
+    "applicationStartYmd": "신청시작일",
+    "applicationEndYmd": "신청마감일",
+    "sprtSclLmtYn": "지원규모제한여부",
+    "sprtSclCnt": "지원규모",
+    "sprtArvlSeqYn": "선착순여부",
+    **{
+        f"region_{region_code}": f"{region_name}지원가능여부"
+        for region_name, region_code in REGION_NAME_TO_CODE.items()
+    },
+}
+
+
+def get_policy_metadata_label(key: str) -> str:
+    """등록된 한글 표시명을 반환하고, 알 수 없는 키는 원문 키를 유지한다."""
+    return POLICY_METADATA_LABELS.get(key, key)
