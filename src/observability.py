@@ -54,7 +54,7 @@ def build_langfuse_config(
     except ImportError as error:
         raise RuntimeError(
             "LANGFUSE_TRACING=true 이지만 langfuse 패키지를 import할 수 없습니다. "
-            "requirements.txt를 설치한 뒤 다시 실행하세요."
+            "uv sync로 의존성을 설치한 뒤 다시 실행하세요."
         ) from error
 
     langfuse_metadata: dict[str, Any] = {}

@@ -12,7 +12,11 @@ from langchain_deepseek import ChatDeepSeek
 from src.checkpointer import create_sqlite_checkpointer
 from src.config import AppConfig
 from src.rag.graph import PolicyRagGraph
-from src.rag.nodes.retriever import PolicyRetriever
+from src.rag.nodes.retriever import (
+    BM25PolicyRetriever,
+    DensePolicyRetriever,
+    EnsemblePolicyRetriever,
+)
 from src.rag.nodes.agent import PolicyAgent
 from src.rag.nodes.turn_planner import TurnPlanner
 
@@ -72,10 +76,30 @@ def build_rag_graph(config: AppConfig) -> PolicyRagGraph:
         persist_directory=config.path(config.data.chroma_dir),
         embedding_function=embeddings,
     )
-    retriever = PolicyRetriever(
+    dense_retriever = DensePolicyRetriever(
         vector_store=vector_store,
-        search_k=config.retriever.search_k,
+        search_k=(
+            config.retriever.dense_candidate_k
+            if config.retriever.mode == "hybrid"
+            else config.retriever.search_k
+        ),
     )
+    if config.retriever.mode == "hybrid":
+        bm25_retriever = BM25PolicyRetriever(
+            collection=vector_store,
+            search_k=config.retriever.bm25_candidate_k,
+        )
+        retriever = EnsemblePolicyRetriever(
+            retrievers=[dense_retriever, bm25_retriever],
+            weights=[
+                config.retriever.hybrid_dense_weight,
+                1 - config.retriever.hybrid_dense_weight,
+            ],
+            search_k=config.retriever.search_k,
+            rrf_k=config.retriever.hybrid_rrf_k,
+        )
+    else:
+        retriever = dense_retriever
 
     llm = create_chat_model(
         provider=config.llm.provider,

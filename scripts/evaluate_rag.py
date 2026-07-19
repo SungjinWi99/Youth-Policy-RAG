@@ -1,8 +1,9 @@
+"""Run end-to-end RAG quality evaluation in Langfuse."""
+
 import os
 import sys
 from threading import Lock
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
 
 from dotenv import load_dotenv
 from langfuse import get_client
@@ -10,7 +11,12 @@ from tqdm import tqdm
 
 from src.config import load_config
 from src.observability import initialize_langfuse, shutdown_langfuse
-from src.eval import build_langfuse_evaluators, load_evaluation_items
+from src.evaluation.langfuse import (
+    is_not_found_error,
+    item_value,
+    stable_dataset_item_id,
+)
+from src.evaluation.rag import build_langfuse_evaluators, load_evaluation_items
 from src.factory import build_rag_graph, create_chat_model
 
 
@@ -23,23 +29,6 @@ def build_evaluator_llm(config):
         provider=config.evaluation.provider,
         model_name=config.evaluation.model,
         temperature=0,
-    )
-
-
-def stable_dataset_item_id(dataset_name: str, case_id: str) -> str:
-    return str(uuid5(NAMESPACE_URL, f"langfuse:{dataset_name}:{case_id}"))
-
-
-def _is_not_found_error(error: Exception) -> bool:
-    status_code = getattr(error, "status_code", None)
-    response = getattr(error, "response", None)
-    response_status_code = getattr(response, "status_code", None)
-    message = str(error).lower()
-    return (
-        status_code == 404
-        or response_status_code == 404
-        or "not found" in message
-        or "404" in message
     )
 
 
@@ -110,7 +99,7 @@ def ensure_dataset(langfuse, dataset_name: str, example_path: str):
     try:
         langfuse.get_dataset(dataset_name)
     except Exception as error:
-        if not _is_not_found_error(error):
+        if not is_not_found_error(error):
             raise
         langfuse.create_dataset(
             name=dataset_name,
@@ -139,7 +128,11 @@ def ensure_dataset(langfuse, dataset_name: str, example_path: str):
         }
         langfuse.create_dataset_item(
             dataset_name=dataset_name,
-            id=stable_dataset_item_id(dataset_name, case_id),
+            id=stable_dataset_item_id(
+                dataset_name,
+                case_id,
+                namespace="",
+            ),
             input=example["input"],
             expected_output=example["expected_output"],
             metadata=metadata,
@@ -148,16 +141,10 @@ def ensure_dataset(langfuse, dataset_name: str, example_path: str):
     return langfuse.get_dataset(dataset_name)
 
 
-def _item_value(item: Any, key: str, default=None):
-    if isinstance(item, dict):
-        return item.get(key, default)
-    return getattr(item, key, default)
-
-
 def run_rag_target(*, item, rag, dataset_name: str, **kwargs) -> dict:
-    inputs = _item_value(item, "input", {}) or {}
-    metadata = _item_value(item, "metadata", {}) or {}
-    case_id = metadata.get("case_id") or _item_value(item, "id", "unknown")
+    inputs = item_value(item, "input", {}) or {}
+    metadata = item_value(item, "metadata", {}) or {}
+    case_id = metadata.get("case_id") or item_value(item, "id", "unknown")
     thread_id = f"eval:{dataset_name}:{case_id}"
     result = rag.generate_answer(
         user_input=inputs["question"],
@@ -175,8 +162,8 @@ def run_rag_target(*, item, rag, dataset_name: str, **kwargs) -> dict:
 
 
 def _case_id_from_item(item: Any) -> str:
-    metadata = _item_value(item, "metadata", {}) or {}
-    return metadata.get("case_id") or str(_item_value(item, "id", "unknown"))
+    metadata = item_value(item, "metadata", {}) or {}
+    return metadata.get("case_id") or str(item_value(item, "id", "unknown"))
 
 
 def _case_id_from_evaluator_kwargs(
@@ -202,7 +189,7 @@ def _case_id_from_evaluator_kwargs(
 
 def _wrap_task_with_progress(*, rag, dataset_name: str, progress: EvaluationProgress):
     def task(*, item, **kwargs):
-        inputs = _item_value(item, "input", {}) or {}
+        inputs = item_value(item, "input", {}) or {}
         case_id = _case_id_from_item(item)
         progress.start_case(case_id, inputs.get("question", ""))
         try:

@@ -18,12 +18,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.factory import create_embedding_model
-from policy.utils import (
+from src.policy.utils import (
     build_age_metadata,
     build_application_period_metadata,
     build_income_metadata,
+    build_region_metadata
 )
-from policy.utils import build_region_metadata
 
 
 DEFAULT_RAW_PATH = PROJECT_ROOT / "data/raw/youth_policies.json"
@@ -78,6 +78,7 @@ def build_documents(
 카테고리: {item.get("lclsfNm", "")} > {item.get("mclsfNm", "")}
 정책 설명: {item.get("plcyExplnCn", "")}
 지원 내용: {item.get("plcySprtCn", "")}
+기타 사항: {item.get("etcMttrCn", "")}
 """.strip()
 
         metadata = {
@@ -100,10 +101,15 @@ def build_documents(
             ),
             "sbmsnDcmntCn": str(item.get("sbmsnDcmntCn") or ""),
             "srngMthdCn": str(item.get("srngMthdCn") or ""),
-            "region": str(item.get("rgtrInstCdNm") or ""),
+            "registrationInstitution": str(
+                item.get("rgtrInstCdNm") or ""
+            ),
             "zipCd": str(item.get("zipCd") or ""),
             "jobCd": str(item.get("jobCd") or ""),
             "mrgSttsCd": str(item.get("mrgSttsCd") or ""),
+            "sprtSclLmtYn": str(item.get("sprtSclLmtYn") or ""),
+            "sprtSclCnt": str(item.get("sprtSclCnt") or ""),
+            "sprtArvlSeqYn": str(item.get("sprtArvlSeqYn") or ""),
         }
         metadata.update(
             build_age_metadata(

@@ -1,7 +1,7 @@
 from typing import Literal
 from functools import lru_cache
 from pathlib import Path
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -17,7 +17,21 @@ class RetrieverConfig(BaseModel):
   provider: Literal['google', 'openai', 'upstage', 'ollama']
   query_model: str
   passage_model: str
-  search_k: int
+  search_k: int = Field(ge=1)
+  mode: Literal['dense', 'hybrid'] = 'dense'
+  dense_candidate_k: int = Field(default=10, ge=1)
+  bm25_candidate_k: int = Field(default=50, ge=1)
+  hybrid_dense_weight: float = Field(default=0.65, ge=0, le=1)
+  hybrid_rrf_k: int = Field(default=1, ge=1)
+
+  @model_validator(mode='after')
+  def validate_candidate_depths(self):
+    if self.mode == 'hybrid':
+      if self.dense_candidate_k < self.search_k:
+        raise ValueError('dense_candidate_k must be >= search_k')
+      if self.bm25_candidate_k < self.search_k:
+        raise ValueError('bm25_candidate_k must be >= search_k')
+    return self
 
 class LLMConfig(BaseModel):
   provider: Literal['google', 'openai', 'upstage', 'anthropic', 'deepseek']

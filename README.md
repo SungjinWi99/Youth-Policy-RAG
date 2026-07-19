@@ -59,10 +59,11 @@ flowchart LR
 │   ├── collect_data.py            # 정책 데이터 수집
 │   ├── ingest_chroma.py           # 문서 임베딩 및 Chroma 적재
 │   ├── generate_eval_dataset.py   # 평가 데이터 생성
-│   ├── evaluate_embedding_retrieval.py # 임베딩 검색 평가
-│   ├── generate_eval_v1_500.sh    # 500건 평가 데이터 생성 예시
-│   └── run_evaluation.py          # Langfuse RAG 평가 실행
+│   ├── generate_planner_query_cache.py # Planner query 고정
+│   ├── evaluate_retrieval.py      # local/Langfuse retrieval 평가
+│   └── evaluate_rag.py            # Langfuse RAG 평가 실행
 ├── src/
+│   ├── evaluation/                # 평가 스키마, 지표, 실험 로직
 │   ├── chat/
 │   │   ├── models.py              # 대화 thread ID 저장 모델
 │   │   ├── router.py              # chat API
@@ -91,12 +92,18 @@ flowchart LR
 
 ## 설치
 
-Python 가상환경을 만들고 의존성을 설치합니다.
+`uv`로 Python 환경과 의존성을 관리합니다.
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+uv sync
+```
+
+명령은 가상환경을 활성화하지 않고 실행합니다.
+
+```bash
+uv run python -m scripts.collect_data --limit-test
+uv run uvicorn main:app --reload
+uv run streamlit run demo_streamlit.py
 ```
 
 ## 설정
@@ -157,13 +164,13 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com
 API 연결과 파일 생성을 10건으로 먼저 확인할 수 있습니다.
 
 ```bash
-python -m scripts.collect_data --limit-test
+uv run python -m scripts.collect_data --limit-test
 ```
 
 전체 정책을 수집합니다.
 
 ```bash
-python -m scripts.collect_data
+uv run python -m scripts.collect_data
 ```
 
 수집 결과는 `config.yaml`의 `data.raw` 경로에 저장됩니다.
@@ -171,7 +178,7 @@ python -m scripts.collect_data
 ### 2. Chroma 적재
 
 ```bash
-python -m scripts.ingest_chroma
+uv run python -m scripts.ingest_chroma
 ```
 
 정책명, 키워드, 카테고리, 정책 설명, 지원 내용을 임베딩하며 다음 정보는
@@ -223,15 +230,6 @@ START -> planner -> retriever? -> agent -> END
 - graph state: `user_input`, `user_profile`, `exclude_expired`, `messages`, `documents`,
   `route`, `route_reason`, `answer_strategy`, `retrieval_queries`, `answer`
 - conversation state: Human/AI 메시지를 사용자별 `thread_id`에 누적
-
-동기 호출, 비동기 호출, SSE 스트리밍 모두 같은 컴파일된 그래프를 사용합니다.
-사용자 프로필은 기존 SQLite DB에서 조회하고, 대화 상태는
-`data/sqlite/conversations.db`의 LangGraph SQLite checkpointer에 별도로
-저장합니다. planner와 agent는 각각 최근 대화 6개와 10개를 사용하도록
-`config.yaml`에서 별도 window를 설정할 수 있습니다. `src/chat/models.py`의
-`ConversationThread`가 사용자 ID별 thread ID를 관리하므로, 대화 기록 삭제 후에는
-새 thread ID로 다음 대화를 시작합니다.
-사용자 프로필을 삭제하면 해당 사용자의 대화 checkpoint도 함께 삭제됩니다.
 
 ### Streamlit 데모
 
@@ -307,28 +305,34 @@ data: {"type":"done"}
 평가 데이터를 생성합니다.
 
 ```bash
-python -m scripts.generate_eval_dataset --sample-size 100 --overwrite
+uv run python -m scripts.generate_eval_dataset --sample-size 100 --overwrite
 ```
 
 기본 생성 크기는 500건이며, 재현 가능한 생성을 위해 seed는 기본값 `42`를
 사용합니다. 여러 모델을 섞어 질문을 생성하려면
 `--generation-model PROVIDER/MODEL=WEIGHT` 옵션을 사용할 수 있습니다.
 
-```bash
-bash scripts/generate_eval_v1_500.sh
-```
-
 Langfuse Dataset을 생성하거나 갱신하고, LangGraph RAG와 evaluator를 실행합니다.
 
 ```bash
-python -m scripts.run_evaluation
+uv run python -m scripts.evaluate_rag
 ```
 
-임베딩 검색만 별도로 평가할 수도 있습니다.
+같은 retrieval 진입점에서 dense, BM25, hybrid를 local 또는
+Langfuse 실험으로 평가합니다.
 
 ```bash
-python -m scripts.evaluate_embedding_retrieval
+uv run python -m scripts.evaluate_retrieval run \
+  --tracking local \
+  --provider upstage \
+  --model solar-embedding-1-large-query \
+  --chroma-dir data/chroma \
+  --retrieval-mode dense
 ```
+
+Planner query cache나 hybrid 가중치 sweep의 전체 옵션은 각각
+`uv run python -m scripts.generate_planner_query_cache --help`,
+`uv run python -m scripts.evaluate_retrieval sweep --help`로 확인할 수 있습니다.
 
 평가 지표:
 
@@ -345,5 +349,5 @@ Faithfulness, Answer Relevance는 평가 모델을 호출합니다.
 ## 테스트
 
 ```bash
-PYTHONPATH=.:src python -m pytest tests -q
+uv run pytest -q
 ```

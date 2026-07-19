@@ -1,8 +1,12 @@
+"""End-to-end RAG evaluator prompts and dataset adapters."""
+
 import json
 from typing import Any
 from pathlib import Path
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field, field_validator, ValidationError
+from pydantic import BaseModel, Field
+
+from src.evaluation.datasets import load_evaluation_cases
 
 
 FAITHFULNESS_PROMPT = """
@@ -89,50 +93,6 @@ class MetricScore(BaseModel):
     )
     reasoning: str = Field(description="점수의 핵심 근거를 한국어로 간결하게 설명. 1~2 문장으로 간단하게 서술하세요.")
 
-
-class EvaluationUserProfile(BaseModel):
-    age: int | None = Field(default=None, ge=0)
-    gender: str | None = None
-    job: str | None = None
-    income: int | None = Field(default=None, ge=0)
-    region: str | None = None
-
-
-class EvaluationInputs(BaseModel):
-    question: str = Field(min_length=1)
-    user_profile: EvaluationUserProfile = Field(
-        default_factory=EvaluationUserProfile
-    )
-    exclude_expired: bool = True
-
-
-class EvaluationOutputs(BaseModel):
-    expected_policy_ids: list[str] = Field(min_length=1)
-
-
-class EvaluationExample(BaseModel):
-    case_id: str = Field(min_length=1)
-    user_input: str = Field(min_length=1)
-    user_profile: EvaluationUserProfile = Field(
-        default_factory=EvaluationUserProfile
-    )
-    expected_policy_ids: list[str] = Field(min_length=1)
-    exclude_expired: bool = True
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    def to_evaluation_item(self) -> dict:
-        return {
-            "case_id": self.case_id,
-            "input": EvaluationInputs(
-                question=self.user_input,
-                user_profile=self.user_profile,
-                exclude_expired=self.exclude_expired,
-            ).model_dump(),
-            "expected_output": EvaluationOutputs(
-                expected_policy_ids=self.expected_policy_ids,
-            ).model_dump(),
-            "metadata": self.metadata,
-        }
 
 def calculate_context_recall(
     retrieved_policy_ids: list[str],
@@ -282,7 +242,7 @@ def _to_langfuse_evaluation(result: dict):
     except ImportError as error:
         raise RuntimeError(
             "Langfuse 평가를 실행하려면 langfuse 패키지가 필요합니다. "
-            "requirements.txt를 설치한 뒤 다시 실행하세요."
+            "uv sync로 의존성을 설치한 뒤 다시 실행하세요."
         ) from error
 
     return Evaluation(
@@ -359,31 +319,18 @@ def build_langfuse_evaluators(llm: Any):
 
 
 def load_evaluation_items(path: Path) -> list[dict]:
-    dataset_path = Path(path)
-    examples: list[EvaluationExample] = []
-    case_ids: set[str] = set()
-
-    with dataset_path.open(encoding="utf-8") as dataset_file:
-        for line_number, line in enumerate(dataset_file, start=1):
-            if not line.strip():
-                continue
-
-            try:
-                example = EvaluationExample.model_validate_json(line)
-            except ValidationError as error:
-                raise ValueError(
-                    f"{dataset_path}:{line_number} 평가 데이터가 유효하지 않습니다."
-                ) from error
-
-            if example.case_id in case_ids:
-                raise ValueError(
-                    f"{dataset_path}:{line_number} 중복 case_id: {example.case_id}"
-                )
-
-            case_ids.add(example.case_id)
-            examples.append(example)
-
-    if not examples:
-        raise ValueError(f"{dataset_path}에 평가 데이터가 없습니다.")
-
-    return [example.to_evaluation_item() for example in examples]
+    return [
+        {
+            "case_id": case.case_id,
+            "input": {
+                "question": case.user_input,
+                "user_profile": case.user_profile,
+                "exclude_expired": case.exclude_expired,
+            },
+            "expected_output": {
+                "expected_policy_ids": case.expected_policy_ids,
+            },
+            "metadata": case.metadata,
+        }
+        for case in load_evaluation_cases(Path(path))
+    ]
