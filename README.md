@@ -9,9 +9,12 @@
 - Chroma 기반 semantic search
 - 사용자 프로필 기반 metadata filtering
 - 정책 신청 방법, 기간, 자격 조건 등 상세 metadata를 포함한 답변 생성
-- LangGraph `StateGraph` 기반 TurnPlanner·검색·생성 워크플로
+- LangGraph `StateGraph` 기반 Retrieval Planner·검색·검수·생성 워크플로
 - 현재 질문, 대화 기록, 활성 문서를 바탕으로 한 검색/재사용 분기
-- 답변 전략별 생성(`policy_recommendation`, `focused_followup`, `summary` 등)
+- `Send`를 이용한 검색 문서별 Policy Checker 병렬 평가
+- 명시적인 정책 적합성 verdict와 최대 3회 재검색
+- 탈락 정책을 제외한 동일 Query 재사용 또는 필요 시 의미 기반 Query 변경
+- Checker를 통과한 정책만 사용하는 답변 생성
 - 사용자 ID별 SQLite 대화 기록 및 연속 대화
 - FastAPI SSE 스트리밍 응답
 - SQLite 기반 사용자 프로필 CRUD
@@ -30,12 +33,16 @@ flowchart LR
     CLIENT["API Client / Streamlit"] --> FASTAPI["FastAPI"]
     FASTAPI --> USERDB["SQLite User Profile"]
     FASTAPI --> GRAPH["LangGraph RAG"]
-    GRAPH --> PLANNER["TurnPlanner<br/>route + strategy + queries"]
-    PLANNER -->|"route=retriever"| RETRIEVE["retriever node"]
-    PLANNER -->|"route=agent"| AGENT["agent node"]
+    GRAPH --> PLANNER["Retrieval Planner<br/>requirement + query"]
+    PLANNER -->|"needs_retrieval=true"| RETRIEVE["retriever node"]
+    PLANNER -->|"needs_retrieval=false"| GENERATOR["Answer Generator"]
     RETRIEVE --> CHROMA
-    RETRIEVE --> AGENT
-    AGENT --> LLM["Chat Model"]
+    RETRIEVE --> SEND["Send: 정책별 병렬 fan-out"]
+    SEND --> CHECKER["Policy Checker"]
+    CHECKER --> SELECTOR["Verdict selector"]
+    SELECTOR -->|"통과 정책 있음"| GENERATOR
+    SELECTOR -->|"통과 정책 없음 / retry 가능"| PLANNER
+    GENERATOR --> LLM["Chat Model"]
     GRAPH --> SSE["SSE metadata / chunks"]
 
     EVALDATA["Evaluation JSONL"] --> LANGFUSE["Langfuse Dataset"]
@@ -72,13 +79,17 @@ flowchart LR
 │   ├── rag/
 │   │   ├── graph.py               # LangGraph workflow와 public API
 │   │   ├── nodes/
-│   │   │   ├── turn_planner.py     # 실행 경로·답변 전략·검색 질의 계획
-│   │   │   ├── router.py          # TurnPlanner 호환 alias
+│   │   │   ├── retrieval_planner.py # 검색 여부·사용자 요구·검색 질의 계획
 │   │   │   ├── retriever.py       # 사용자 조건 기반 정책 검색
-│   │   │   └── agent.py           # prompt 구성과 답변 생성
+│   │   │   ├── policy_checker.py  # 문서별 적합도 병렬 평가
+│   │   │   ├── policy_selector.py # verdict 기반 정책 선택
+│   │   │   └── answer_generator.py # 검수된 정책 기반 답변 생성
+│   │   ├── retrievers/
+│   │   │   ├── dense_retriever.py # Chroma dense 검색
+│   │   │   ├── bm25_retriever.py  # Kiwi BM25 검색
+│   │   │   └── ensemble_retriever.py # weighted RRF hybrid 검색
 │   │   ├── state.py               # graph state schema
-│   │   ├── prompts.py             # 라우터·생성 prompt
-│   │   └── utils/formatting.py    # context와 사용자 프로필 포맷
+│   │   └── utils.py               # context와 사용자 프로필 포맷
 │   ├── user/                      # 사용자 프로필 모델과 API
 │   ├── config.py                  # config.yaml 로더
 │   ├── database.py                # SQLite engine과 session
@@ -122,9 +133,11 @@ llm:
   model: "deepseek-v4-flash"
 
 rag:
-  router:
+  planner:
     history_window: 6
-  agent:
+  policy_checker:
+    max_retries: 3
+  answer_generator:
     history_window: 10
 
 evaluation:
@@ -207,28 +220,40 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 
 ### LangGraph 워크플로
 
-`src/rag/graph.py`의 그래프는 매 턴 `TurnPlanner`가 현재 질문, 최근 대화,
-사용자 프로필, 현재 checkpoint에 저장된 활성 문서를 함께 보고 실행 계획을
-만듭니다.
+`src/rag/graph.py`의 그래프는 매 턴 Retrieval Planner가 현재 질문, 최근
+대화, 사용자 프로필, checkpoint의 활성 정책을 보고 검색 필요 여부와 Query를
+결정합니다. 새로 검색한 문서는 각각 독립된 `Send` 작업으로 Policy Checker에
+전달되어 병렬 평가됩니다.
 
 ```text
-START -> planner -> retriever? -> agent -> END
+START
+  -> retrieval_planner
+  -> retriever?
+  -> Send(policy_checker × N)
+  -> policy_selector
+  -> answer_generator
+  -> END
 ```
 
-- `planner`: 구조화된 `TurnPlan`을 만들고 `route`, `answer_strategy`,
-  `retrieval_queries`, `route_reason`을 결정
-- `route="retriever"`: 새 정책 검색이 필요한 경우입니다. planner가 만든 검색 질의를
-  순서대로 시도하고, 문서를 찾으면 다음 질의는 생략합니다.
-- `route="agent"`: 활성 문서 재사용, 인사, 프로필 업데이트, 요약 등 새 검색 없이
-  답할 수 있는 경우입니다.
-- `retriever`: 사용자 프로필로 Chroma metadata filter를 만들고 정책 문서를 검색
-- `agent`: 검색 문서, 사용자 프로필, `answer_strategy`를 prompt에 넣어 답변 생성
-- 답변 전략은 `brief_reply`, `policy_recommendation`, `profile_update_response`,
-  `focused_followup`, `clarifying_question`, `summary`를 지원합니다.
-- planner에는 잘못된 계획을 보정하는 guard가 있어 검색 질의 누락, 문서 없는 후속 질문,
-  대화 없는 요약 요청을 안전한 기본 전략으로 바꿉니다.
-- graph state: `user_input`, `user_profile`, `exclude_expired`, `messages`, `documents`,
-  `route`, `route_reason`, `answer_strategy`, `retrieval_queries`, `answer`
+- `retrieval_planner`: `user_requirement`, `needs_retrieval`,
+  `retrieval_query`, `retrieval_reason`을 구조화해 반환
+- `needs_retrieval=false`: 활성 정책 재사용이나 단순 응답처럼 검색 없이 답변 가능
+- `retriever`: 연령·지역·신청기간으로 Chroma metadata filter를 만들고 정책 문서를 검색.
+  소득은 하드 필터에 사용하지 않고 Policy Checker가 확인이 필요한 적합성 조건으로 판단
+- `policy_checker`: 검색 문서 수만큼 `Send`로 fan-out되며 각 정책에
+  `direct_fit`, `fit_needs_clarification`, `indirect`, `mismatch` verdict와 근거를 생성
+- `policy_selector`: `direct_fit`과 `fit_needs_clarification` 정책만 선택
+- 통과 정책이 없으면 `indirect`·`mismatch` 정책을 다음 검색에서 제외하고
+  `max_retries`까지 재검색. Query는 탈락 사유상 검색 방향을 바꿀 필요가 있을 때만
+  Planner가 변경하며, 단순 접미사 추가 같은 기계적 변경은 하지 않는다.
+  제외 적용 후 빈 결과가 나온 상태에서 Planner도 같은 Query를 제안하면 조기 종료한다.
+  기본값 3은 최초 검색을 포함해 최대 4번 검색한다는 의미
+- `answer_generator`: Checker를 통과한 정책, 사용자 프로필, 최근 대화만으로 답변 생성
+- graph state: `user_input`, `user_profile`, `exclude_expired`, `messages`,
+  `user_requirement`, `needs_retrieval`, `retrieval_query`, `retrieval_count`,
+  `retrieved_policies`, `checked_policies`, `active_policies`, `documents`, `answer`.
+  `retrieved_policies`는 이번 검색 후보, `checked_policies`는 현재 턴의 누적 판정,
+  `documents`는 이번 답변 근거, `active_policies`는 다음 턴에도 유지할 통과 정책이다.
 - conversation state: Human/AI 메시지를 사용자별 `thread_id`에 누적
 
 ### Streamlit 데모
@@ -345,6 +370,17 @@ Planner query cache나 hybrid 가중치 sweep의 전체 옵션은 각각
 
 Context Recall은 정책 ID를 직접 비교하고, Context Average Helpfulness,
 Faithfulness, Answer Relevance는 평가 모델을 호출합니다.
+
+관찰된 답변 실패 사례는 별도 회귀셋으로 다시 실행할 수 있습니다.
+
+```bash
+uv run python scripts/rerun_failed_answer_cases.py \
+  --run-id <run-id> \
+  --fail-on-automated-check
+```
+
+케이스 추가 방법, 자동 검사와 정성 판정의 구분, 만료 정책 포함 진단은
+`docs/failure_regression_suite.md`를 참고합니다.
 
 ## 테스트
 

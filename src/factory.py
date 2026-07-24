@@ -12,14 +12,18 @@ from langchain_deepseek import ChatDeepSeek
 from src.checkpointer import create_sqlite_checkpointer
 from src.config import AppConfig
 from src.rag.graph import PolicyRagGraph
-from src.rag.nodes.retriever import (
+from src.rag.nodes import (
+    make_answer_generator_node,
+    make_policy_checker_node,
+    make_policy_selector_node,
+    make_retrieval_planner_node,
+    make_retriever_node,
+)
+from src.rag.retrievers import (
     BM25PolicyRetriever,
     DensePolicyRetriever,
     EnsemblePolicyRetriever,
 )
-from src.rag.nodes.agent import PolicyAgent
-from src.rag.nodes.turn_planner import TurnPlanner
-
 
 CHAT_MODEL_CLASSES = {
     "google": ChatGoogleGenerativeAI,
@@ -66,7 +70,11 @@ def create_embedding_model(provider: str, model_name: str, **kwargs):
     return model_class(model=model_name, **kwargs)
 
 
-def build_rag_graph(config: AppConfig) -> PolicyRagGraph:
+def build_rag_graph(
+    config: AppConfig,
+    *,
+    trace_config_factory=None,
+) -> PolicyRagGraph:
     embeddings = create_embedding_model(
         provider=config.retriever.provider,
         model_name=config.retriever.query_model,
@@ -89,7 +97,7 @@ def build_rag_graph(config: AppConfig) -> PolicyRagGraph:
             collection=vector_store,
             search_k=config.retriever.bm25_candidate_k,
         )
-        retriever = EnsemblePolicyRetriever(
+        policy_retriever = EnsemblePolicyRetriever(
             retrievers=[dense_retriever, bm25_retriever],
             weights=[
                 config.retriever.hybrid_dense_weight,
@@ -99,24 +107,28 @@ def build_rag_graph(config: AppConfig) -> PolicyRagGraph:
             rrf_k=config.retriever.hybrid_rrf_k,
         )
     else:
-        retriever = dense_retriever
+        policy_retriever = dense_retriever
 
     llm = create_chat_model(
         provider=config.llm.provider,
         model_name=config.llm.model,
     )
-    agent = PolicyAgent(llm)
-    planner = TurnPlanner(llm)
-
     checkpointer = create_sqlite_checkpointer(
         config.path(config.data.conversation_db)
     )
-
     return PolicyRagGraph(
-        planner=planner,
-        retriever=retriever,
-        agent=agent,
+        retrieval_planner=make_retrieval_planner_node(
+            llm,
+            config.rag.planner.history_window,
+        ),
+        retriever=make_retriever_node(policy_retriever),
+        policy_checker=make_policy_checker_node(llm),
+        policy_selector=make_policy_selector_node(),
+        answer_generator=make_answer_generator_node(
+            llm,
+            config.rag.answer_generator.history_window,
+        ),
         checkpointer=checkpointer,
-        planner_history_window=config.rag.planner.history_window,
-        agent_history_window=config.rag.agent.history_window,
+        max_retrieval_retries=config.rag.policy_checker.max_retries,
+        trace_config_factory=trace_config_factory,
     )

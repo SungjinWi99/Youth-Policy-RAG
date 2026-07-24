@@ -6,6 +6,12 @@ from src.policy.utils import REGION_NAME_TO_CODE, extract_sido_codes
 from src.rag.state import RAGUserProfile
 
 
+def window_history(messages: Sequence, window: int) -> list:
+    history = list(messages)[:-1]
+    if window <= 0:
+        return []
+    return history[-window:]
+
 def format_optional(value) -> str:
     return str(value) if value not in (None, "") else "미입력"
 
@@ -89,7 +95,7 @@ def format_user_profile(user: RAGUserProfile) -> str:
     ])
 
 
-def format_doc(doc: Document, index: int) -> str:
+def format_doc(doc: Document, index: int = 1) -> str:
     metadata = doc.metadata
     return f"""
 [검색 결과 {index}]

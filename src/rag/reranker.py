@@ -44,13 +44,14 @@ class LlamaCppReranker:
             json={
                 "model": self.model,
                 "query": query,
-                "documents": [document.page_content for document in documents],
+                "documents": [
+                    document.page_content for document in documents
+                ],
             },
             timeout=self.timeout_seconds,
         )
         response.raise_for_status()
-        payload = response.json()
-        raw_results = payload.get("results")
+        raw_results = response.json().get("results")
         if not isinstance(raw_results, list):
             raise ValueError("reranker 응답에 results 목록이 없습니다.")
 
@@ -66,9 +67,17 @@ class LlamaCppReranker:
                 or isinstance(score, bool)
                 or not isinstance(score, (int, float))
             ):
-                raise ValueError("reranker result의 index 또는 score가 유효하지 않습니다.")
-            if index < 0 or index >= len(documents) or index in seen_indexes:
-                raise ValueError("reranker result index가 범위를 벗어나거나 중복됩니다.")
+                raise ValueError(
+                    "reranker result의 index 또는 score가 유효하지 않습니다."
+                )
+            if (
+                index < 0
+                or index >= len(documents)
+                or index in seen_indexes
+            ):
+                raise ValueError(
+                    "reranker result index가 범위를 벗어나거나 중복됩니다."
+                )
             seen_indexes.add(index)
             reranked.append(RerankedDocument(
                 document=documents[index],
@@ -81,7 +90,6 @@ class LlamaCppReranker:
                 "reranker가 일부 문서를 누락했습니다: "
                 f"expected={len(documents)}, actual={len(reranked)}"
             )
-
         return sorted(
             reranked,
             key=lambda result: (

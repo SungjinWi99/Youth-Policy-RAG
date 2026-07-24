@@ -27,7 +27,9 @@ llm:
 rag:
   planner:
     history_window: 6
-  agent:
+  policy_checker:
+    max_retries: 3
+  answer_generator:
     history_window: 10
 
 evaluation:

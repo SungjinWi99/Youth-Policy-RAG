@@ -21,8 +21,11 @@ from src.evaluation.datasets import (
     project_path,
 )
 from src.factory import create_chat_model
-from src.rag.nodes.turn_planner import TurnPlanner
-from src.rag.prompts import TURN_PLANNER_SYSTEM_PROMPT, TURN_PLANNER_USER_PROMPT
+from src.rag.nodes.retrieval_planner import (
+    PLANNER_HUMAN_PROMPT,
+    PLANNER_SYSTEM_PROMPT,
+    make_retrieval_planner_node,
+)
 
 
 DEFAULT_OUTPUT_PATH = (
@@ -33,7 +36,7 @@ DEFAULT_OUTPUT_PATH = (
 
 
 def planner_prompt_sha256() -> str:
-    prompt = f"{TURN_PLANNER_SYSTEM_PROMPT}\n{TURN_PLANNER_USER_PROMPT}"
+    prompt = f"{PLANNER_SYSTEM_PROMPT}\n{PLANNER_HUMAN_PROMPT}"
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
 
@@ -59,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     config = load_config()
     parser = argparse.ArgumentParser(
         description=(
-            "평가 데이터의 TurnPlanner 출력을 한 번 생성해 JSONL로 고정합니다."
+            "평가 데이터의 Retrieval Planner 출력을 JSONL로 고정합니다."
         )
     )
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH)
@@ -75,6 +78,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    config = load_config()
     load_dotenv()
     dataset_path = project_path(args.dataset)
     output_path = project_path(args.output)
@@ -94,23 +98,33 @@ def main() -> None:
         model_name=args.model,
         temperature=0,
     )
-    planner = TurnPlanner(llm)
+    planner = make_retrieval_planner_node(
+        llm,
+        config.rag.planner.history_window,
+    )
     prompt_hash = planner_prompt_sha256()
     remaining_cases = [
         case for case in cases if case.case_id not in completed_case_ids
     ]
 
     with output_path.open("a", encoding="utf-8") as output_file:
-        for case in tqdm(remaining_cases, desc="Freeze TurnPlanner queries"):
+        for case in tqdm(
+            remaining_cases,
+            desc="Freeze Retrieval Planner queries",
+        ):
             last_error = None
             for attempt in range(1, args.max_attempts + 1):
                 try:
-                    plan = planner.decide(
-                        current_question=case.user_input,
-                        user_profile=case.user_profile,
-                        documents=[],
-                        chat_history=[],
-                    )
+                    plan = planner.invoke({
+                        "user_input": case.user_input,
+                        "user_profile": case.user_profile,
+                        "exclude_expired": case.exclude_expired,
+                        "messages": [],
+                        "documents": [],
+                        "retrieval_count": 0,
+                        "retrieved_policies": [],
+                        "checked_policies": [],
+                    })
                     break
                 except Exception as error:
                     last_error = error
@@ -128,10 +142,24 @@ def main() -> None:
                 "case_id": case.case_id,
                 "raw_query": case.user_input,
                 "user_profile": case.user_profile,
-                "planner_route": plan.route,
-                "answer_strategy": plan.answer_strategy,
-                "retrieval_queries": plan.retrieval_queries,
-                "route_reason": plan.route_reason,
+                # 기존 retrieval evaluator cache schema와의 호환 필드입니다.
+                "planner_route": (
+                    "retriever"
+                    if plan["needs_retrieval"]
+                    else "agent"
+                ),
+                "answer_strategy": (
+                    "policy_recommendation"
+                    if plan["needs_retrieval"]
+                    else "brief_reply"
+                ),
+                "retrieval_queries": (
+                    [plan["retrieval_query"]]
+                    if plan["needs_retrieval"]
+                    and plan["retrieval_query"]
+                    else []
+                ),
+                "route_reason": plan["retrieval_reason"],
                 "planner_provider": args.provider,
                 "planner_model": args.model,
                 "planner_prompt_sha256": prompt_hash,
