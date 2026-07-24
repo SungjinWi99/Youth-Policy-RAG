@@ -5,6 +5,9 @@ __pycache__/
 *.pyc
 .env
 *.json
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/tsconfig.json
 
 data/*
 data/eval/*

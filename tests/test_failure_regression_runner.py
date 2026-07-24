@@ -24,6 +24,9 @@ def test_failure_regression_suite_loads_all_historical_failures():
         "AG-05",
         "AG-09",
         "AG-10",
+        "AG-11",
+        "AG-12",
+        "AG-13",
     ]
     assert [turn.turn for turn in suite.cases[-1].turns] == [1, 2]
 
@@ -58,3 +61,65 @@ def test_automated_checks_detect_duplicates_and_lost_follow_up_policy():
         "no_duplicate_policy_titles",
     }
     assert all(result["passed"] is False for result in results)
+
+
+def test_automated_checks_detect_reused_policy_and_forbidden_title():
+    results = evaluate_automated_checks(
+        AutomatedChecks(
+            min_retrieval_count=1,
+            require_new_policy_ids_if_selected=True,
+            forbidden_policy_title_terms=["매입임대", "임차보증금"],
+        ),
+        retrieval_count=1,
+        policy_ids=["A", "B"],
+        policy_titles=["청년 매입임대주택", "청년 월세 지원"],
+        previous_policy_ids=["A", "B"],
+    )
+
+    assert results == [
+        {
+            "name": "min_retrieval_count",
+            "passed": True,
+            "expected": ">= 1",
+            "actual": 1,
+        },
+        {
+            "name": "require_new_policy_ids_if_selected",
+            "passed": False,
+            "expected": (
+                "no policies selected or at least one policy ID not selected "
+                "in the previous turn"
+            ),
+            "actual": [],
+        },
+        {
+            "name": "forbidden_policy_title_terms",
+            "passed": False,
+            "expected": (
+                "no titles containing ['매입임대', '임차보증금']"
+            ),
+            "actual": ["청년 매입임대주택"],
+        },
+    ]
+
+
+def test_automated_checks_allow_safe_empty_new_search_result():
+    results = evaluate_automated_checks(
+        AutomatedChecks(require_new_policy_ids_if_selected=True),
+        retrieval_count=1,
+        policy_ids=[],
+        policy_titles=[],
+        previous_policy_ids=["A"],
+    )
+
+    assert results == [
+        {
+            "name": "require_new_policy_ids_if_selected",
+            "passed": True,
+            "expected": (
+                "no policies selected or at least one policy ID not selected "
+                "in the previous turn"
+            ),
+            "actual": [],
+        }
+    ]

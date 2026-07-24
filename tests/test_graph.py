@@ -493,6 +493,7 @@ def test_graph_config_adds_langfuse_callback_metadata(monkeypatch):
     config = graph._build_graph_config(
         "thread-1",
         trace_user_id="user-1",
+        trace_id="a" * 32,
         trace_tags=["rag-test"],
         trace_metadata={"case_id": "case-1"},
     )
@@ -517,6 +518,7 @@ def test_stream_answer_exposes_only_checker_accepted_policies():
                 user_input="지원 정책",
                 user_profile={},
                 thread_id="stream-user",
+                trace_id="a" * 32,
             )
         ]
 
@@ -528,6 +530,7 @@ def test_stream_answer_exposes_only_checker_accepted_policies():
         "done",
     ]
     assert events[0]["data"]["retrieved_policy_ids"] == ["HIGH"]
+    assert events[0]["data"]["trace_id"] == "a" * 32
     assert events[1]["data"] == "답변: 지원 정책"
 
 

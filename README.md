@@ -19,6 +19,9 @@
 - FastAPI SSE 스트리밍 응답
 - SQLite 기반 사용자 프로필 CRUD
 - 정책 ID 기반 원본 정책 상세 조회 API
+- Next.js 기반 실서비스형 상담 프론트엔드
+- 서버 발급 익명 세션, 30일 보존, 프로필·상담 기록 삭제
+- 답변 근거 정책을 표시하는 활성 정책 카드
 - Streamlit 기반 API 테스트 화면
 - Langfuse Dataset과 evaluator를 이용한 RAG 품질 평가
 
@@ -30,7 +33,7 @@ flowchart LR
     RAW --> INGEST["ingest_chroma.py"]
     INGEST --> CHROMA["Chroma Vector Store"]
 
-    CLIENT["API Client / Streamlit"] --> FASTAPI["FastAPI"]
+    CLIENT["Next.js / API Client / Streamlit"] --> FASTAPI["FastAPI"]
     FASTAPI --> USERDB["SQLite User Profile"]
     FASTAPI --> GRAPH["LangGraph RAG"]
     GRAPH --> PLANNER["Retrieval Planner<br/>requirement + query"]
@@ -56,6 +59,8 @@ flowchart LR
 .
 ├── config.yaml                    # 모델, 저장소, 평가 설정
 ├── main.py                        # FastAPI 애플리케이션
+├── frontend/                      # Next.js 상담 웹서비스
+├── deploy/                        # Nginx·systemd 배포 예시
 ├── demo_streamlit.py              # 로컬 테스트 UI
 ├── data/
 │   ├── raw/                       # OpenAPI 원본 데이터
@@ -174,7 +179,8 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com
 
 ### 1. 정책 데이터 수집
 
-API 연결과 파일 생성을 10건으로 먼저 확인할 수 있습니다.
+API 연결과 파일 생성을 10건으로 먼저 확인할 수 있습니다. 테스트 결과는
+`data/raw/youth_policies.sample.json`에 저장되어 운영 원본을 덮어쓰지 않습니다.
 
 ```bash
 uv run python -m scripts.collect_data --limit-test
@@ -187,6 +193,26 @@ uv run python -m scripts.collect_data
 ```
 
 수집 결과는 `config.yaml`의 `data.raw` 경로에 저장됩니다.
+
+기존 원본 JSON과 Chroma 컬렉션에 신규 정책만 추가할 때는 먼저 변경
+예정 건수를 확인합니다.
+
+```bash
+uv run python -m scripts.sync_new_policies --dry-run
+```
+
+확인 후 증분 동기화를 실행합니다.
+
+```bash
+uv run python -m scripts.sync_new_policies
+```
+
+`plcyNo`가 로컬 원본에 없는 정책만 추가하고, API에서 더 이상 조회되지 않는
+기존 정책은 삭제하지 않습니다. API 페이지 일부가 누락되거나 원본 JSON과
+Chroma의 기존 ID가 다르면 변경 없이 중단합니다. 설정을 따로 지정하지 않으면
+`config.yaml`의 원본 경로, Chroma 경로·컬렉션, `retriever.provider`,
+`retriever.passage_model`을 사용합니다. 실행 중인 API 서버가 있다면 동기화
+후 재시작해야 메모리의 BM25 인덱스에도 반영됩니다.
 
 ### 2. Chroma 적재
 
@@ -256,6 +282,31 @@ START
   `documents`는 이번 답변 근거, `active_policies`는 다음 턴에도 유지할 통과 정책이다.
 - conversation state: Human/AI 메시지를 사용자별 `thread_id`에 누적
 
+### Next.js 프론트엔드
+
+FastAPI는 loopback에서 실행하고, Next.js가 브라우저의 `/api/*` 요청을
+FastAPI로 프록시합니다.
+
+```bash
+uv run --locked uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+별도 터미널에서 실행합니다.
+
+```bash
+cd frontend
+cp .env.example .env.local
+npm ci
+npm run dev
+```
+
+같은 와이파이의 테스트 참여자에게 공개할 때는 `npm run dev:lan`을 사용하고
+`http://<컴퓨터의 사설 IP>:3000`으로 접속합니다. FastAPI 8000 포트는
+LAN에 공개할 필요가 없습니다.
+
+프론트 제품 범위는 `docs/frontend_product_spec.md`, 로컬·EC2 배포 구조는
+`docs/frontend_deployment.md`를 참고합니다.
+
 ### Streamlit 데모
 
 FastAPI 서버를 먼저 실행한 뒤 별도 터미널에서 실행합니다.
@@ -281,8 +332,16 @@ streamlit run demo_streamlit.py --server.port 8501
 | `POST` | `/user/{user_id}` | 사용자 프로필 수정 |
 | `DELETE` | `/user/{user_id}` | 사용자 프로필 삭제 |
 | `GET` | `/policies/{policy_id}` | 정책 상세 정보 조회 |
+| `POST` | `/policies/batch` | 여러 정책 상세 정보 조회 |
 | `POST` | `/chat` | 사용자 프로필 기반 정책 검색 및 SSE 답변 |
 | `DELETE` | `/chat/{user_id}` | 사용자 대화 기록 삭제 |
+| `POST` | `/sessions/anonymous` | 30일 익명 상담 세션 생성 |
+| `GET` | `/sessions/current` | 현재 익명 세션과 프로필 조회 |
+| `PATCH` | `/me/profile` | 현재 세션의 프로필 수정 |
+| `GET` | `/me/conversation` | 현재 세션의 상담과 활성 정책 복원 |
+| `POST` | `/me/chat` | 익명 세션 기반 SSE 상담 |
+| `DELETE` | `/me/conversation` | 현재 상담 기록 초기화 |
+| `DELETE` | `/me/data` | 프로필·상담·익명 세션 전체 삭제 |
 
 사용자 등록 예시:
 
@@ -355,7 +414,10 @@ uv run python -m scripts.evaluate_retrieval run \
   --retrieval-mode dense
 ```
 
-Planner query cache나 hybrid 가중치 sweep의 전체 옵션은 각각
+Planner query cache는 현재 Planner 출력과 동일한 schema version 2를 사용합니다.
+기존 `planner_route`, `answer_strategy`, `retrieval_queries` 기반 캐시는 호환되지
+않으므로 새 파일로 다시 생성해야 합니다. Planner query cache나 hybrid 가중치
+sweep의 전체 옵션은 각각
 `uv run python -m scripts.generate_planner_query_cache --help`,
 `uv run python -m scripts.evaluate_retrieval sweep --help`로 확인할 수 있습니다.
 

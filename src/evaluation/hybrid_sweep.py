@@ -74,8 +74,8 @@ def evaluate_cached_hybrid_sweep(
     for case in cases:
         planner_record = planner_records[case.case_id]
         dense_policy_ids = dense_details[case.case_id]["output"]["retrieved_policy_ids"]
-        if planner_record.planner_route == "retriever":
-            query = (planner_record.retrieval_queries or [case.user_input])[0]
+        if planner_record.needs_retrieval:
+            query = planner_record.retrieval_query or case.user_input
             bm25_documents = bm25.retrieve(RetrievalRequest(
                 query=query,
                 user_profile=case.user_profile,

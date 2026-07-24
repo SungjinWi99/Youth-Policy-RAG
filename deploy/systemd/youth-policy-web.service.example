@@ -1,0 +1,19 @@
+[Unit]
+Description=Youth Policy Chatbot Next.js
+After=network.target youth-policy-api.service
+
+[Service]
+Type=simple
+User=youth-policy
+Group=youth-policy
+WorkingDirectory=/opt/youth-policy-rag/frontend
+EnvironmentFile=/etc/youth-policy-chatbot/web.env
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3000
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

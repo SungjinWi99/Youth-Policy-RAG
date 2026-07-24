@@ -33,7 +33,6 @@ from src.rag.reranker import LlamaCppReranker
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 DEFAULT_RANK_DEPTH = 10
-DEFAULT_RRF_K = 60
 DEFAULT_HYBRID_BM25_CANDIDATE_K = 50
 DEFAULT_HYBRID_DENSE_WEIGHT = 0.65
 DEFAULT_HYBRID_RRF_K = 1
@@ -105,50 +104,12 @@ def build_policy_retriever(
     )
 
 
-def reciprocal_rank_fusion(
-    ranked_policy_id_lists: list[list[str]],
-    *,
-    rrf_k: int,
-    limit: int,
-) -> list[tuple[str, float]]:
-    scores: dict[str, float] = {}
-    best_ranks: dict[str, int] = {}
-    first_seen: dict[str, int] = {}
-    seen_order = 0
-    for policy_ids in ranked_policy_id_lists:
-        seen_in_list: set[str] = set()
-        for rank, policy_id in enumerate(policy_ids, start=1):
-            if not policy_id or policy_id in seen_in_list:
-                continue
-            seen_in_list.add(policy_id)
-            if policy_id not in first_seen:
-                first_seen[policy_id] = seen_order
-                seen_order += 1
-            scores[policy_id] = scores.get(policy_id, 0.0) + 1.0 / (rrf_k + rank)
-            best_ranks[policy_id] = min(best_ranks.get(policy_id, rank), rank)
-    ranked = sorted(
-        scores,
-        key=lambda policy_id: (
-            -scores[policy_id],
-            best_ranks[policy_id],
-            first_seen[policy_id],
-            policy_id,
-        ),
-    )
-    return [(policy_id, scores[policy_id]) for policy_id in ranked[:limit]]
-
-
 def build_retrieval_task(
     retriever: PolicyRetriever,
     planner_records: dict[str, PlannerQueryRecord] | None = None,
     *,
-    planner_query_mode: str = "first",
-    rrf_k: int = DEFAULT_RRF_K,
     reranker: LlamaCppReranker | None = None,
 ):
-    if planner_query_mode not in {"first", "rrf"}:
-        raise ValueError(f"지원하지 않는 Planner query mode: {planner_query_mode}")
-
     def task(*, item, **kwargs) -> dict[str, Any]:
         inputs = item_value(item, "input", {}) or {}
         metadata = item_value(item, "metadata", {}) or {}
@@ -163,14 +124,14 @@ def build_retrieval_task(
                 raise ValueError(f"Planner cache에 없는 평가 item: {case_id}")
             record = planner_records[case_id]
             planner_output = {
-                "planner_route": record.planner_route,
-                "answer_strategy": record.answer_strategy,
-                "planner_queries": record.retrieval_queries,
-                "route_reason": record.route_reason,
+                "planner_user_requirement": record.user_requirement,
+                "planner_needs_retrieval": record.needs_retrieval,
+                "planner_retrieval_reason": record.retrieval_reason,
+                "planner_retrieval_query": record.retrieval_query,
                 "planner_provider": record.planner_provider,
                 "planner_model": record.planner_model,
             }
-            if record.planner_route != "retriever":
+            if not record.needs_retrieval:
                 return {
                     **planner_output,
                     "raw_query": raw_query,
@@ -179,34 +140,8 @@ def build_retrieval_task(
                     "used_raw_fallback": False,
                     "retrieved_policy_ids": [],
                 }
-            queries = record.retrieval_queries or [raw_query]
-            used_raw_fallback = not record.retrieval_queries
-            if planner_query_mode == "rrf":
-                ranked_lists = []
-                for planner_query in queries:
-                    documents = retriever.retrieve(RetrievalRequest(
-                        query=planner_query,
-                        user_profile=inputs.get("user_profile", {}),
-                        exclude_expired=inputs.get("exclude_expired", False),
-                    ))
-                    ranked_lists.append([
-                        document.metadata["plcyNo"]
-                        for document in documents
-                        if document.metadata.get("plcyNo")
-                    ])
-                fused = reciprocal_rank_fusion(ranked_lists, rrf_k=rrf_k, limit=retriever.search_k)
-                return {
-                    **planner_output,
-                    "raw_query": raw_query,
-                    "executed_query": None,
-                    "executed_queries": queries,
-                    "used_raw_fallback": used_raw_fallback,
-                    "per_query_retrieved_policy_ids": ranked_lists,
-                    "rrf_k": rrf_k,
-                    "rrf_scores": dict(fused),
-                    "retrieved_policy_ids": [policy_id for policy_id, _ in fused],
-                }
-            query = queries[0]
+            query = record.retrieval_query or raw_query
+            used_raw_fallback = not record.retrieval_query
 
         request = RetrievalRequest(
             query=query,

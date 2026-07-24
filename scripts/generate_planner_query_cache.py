@@ -20,6 +20,7 @@ from src.evaluation.datasets import (
     load_evaluation_cases,
     project_path,
 )
+from src.evaluation.models import PlannerQueryRecord
 from src.factory import create_chat_model
 from src.rag.nodes.retrieval_planner import (
     PLANNER_HUMAN_PROMPT,
@@ -49,9 +50,9 @@ def load_completed_case_ids(path: Path) -> set[str]:
             if not line.strip():
                 continue
             try:
-                row = json.loads(line)
-                completed.add(row["case_id"])
-            except (json.JSONDecodeError, KeyError) as error:
+                record = PlannerQueryRecord.model_validate_json(line)
+                completed.add(record.case_id)
+            except ValueError as error:
                 raise ValueError(
                     f"{path}:{line_number} Planner cache가 유효하지 않습니다."
                 ) from error
@@ -139,27 +140,14 @@ def main() -> None:
                 ) from last_error
 
             row = {
+                "schema_version": 2,
                 "case_id": case.case_id,
                 "raw_query": case.user_input,
                 "user_profile": case.user_profile,
-                # 기존 retrieval evaluator cache schema와의 호환 필드입니다.
-                "planner_route": (
-                    "retriever"
-                    if plan["needs_retrieval"]
-                    else "agent"
-                ),
-                "answer_strategy": (
-                    "policy_recommendation"
-                    if plan["needs_retrieval"]
-                    else "brief_reply"
-                ),
-                "retrieval_queries": (
-                    [plan["retrieval_query"]]
-                    if plan["needs_retrieval"]
-                    and plan["retrieval_query"]
-                    else []
-                ),
-                "route_reason": plan["retrieval_reason"],
+                "user_requirement": plan["user_requirement"],
+                "needs_retrieval": plan["needs_retrieval"],
+                "retrieval_reason": plan["retrieval_reason"],
+                "retrieval_query": plan["retrieval_query"],
                 "planner_provider": args.provider,
                 "planner_model": args.model,
                 "planner_prompt_sha256": prompt_hash,

@@ -1,5 +1,4 @@
 import argparse
-import json
 import os
 import sys
 import time
@@ -18,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.factory import create_embedding_model
+from src.policy.corpus import load_policy_snapshot
 from src.policy.utils import (
     build_age_metadata,
     build_application_period_metadata,
@@ -43,25 +43,6 @@ def to_policy_end_date(value: Any) -> int:
     if len(normalized) == 8 and normalized.isdigit():
         return int(normalized)
     return 99991231
-
-
-def load_raw_policies(path: Path) -> list[dict[str, Any]]:
-    with path.open(encoding="utf-8") as policy_file:
-        policies = json.load(policy_file)
-    if not isinstance(policies, list) or not policies:
-        raise ValueError(f"{path}에는 비어 있지 않은 JSON 배열이 필요합니다.")
-
-    policy_ids = []
-    for index, policy in enumerate(policies):
-        if not isinstance(policy, dict):
-            raise ValueError(f"{path}[{index}] 정책이 JSON 객체가 아닙니다.")
-        policy_id = str(policy.get("plcyNo") or "").strip()
-        if not policy_id:
-            raise ValueError(f"{path}[{index}]에 plcyNo가 없습니다.")
-        policy_ids.append(policy_id)
-    if len(policy_ids) != len(set(policy_ids)):
-        raise ValueError(f"{path}에 중복 plcyNo가 있습니다.")
-    return policies
 
 
 def build_documents(
@@ -281,7 +262,7 @@ def main() -> None:
 
     raw_path = project_path(args.raw_path)
     chroma_dir = project_path(args.chroma_dir)
-    policies = load_raw_policies(raw_path)
+    policies = load_policy_snapshot(raw_path)
     documents, ids = build_documents(policies)
     embedding_model = create_passage_embedding_model(
         provider=args.provider,

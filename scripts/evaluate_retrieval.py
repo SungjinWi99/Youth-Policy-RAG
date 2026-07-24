@@ -33,7 +33,7 @@ from src.evaluation.langfuse import (
     ensure_retrieval_dataset,
     item_value,
     planner_raw_fallback_evaluator,
-    planner_retriever_route_evaluator,
+    planner_needs_retrieval_evaluator,
     reciprocal_rank_evaluator,
     reranker_latency_evaluator,
 )
@@ -43,7 +43,6 @@ from src.evaluation.retrieval import (
     DEFAULT_HYBRID_RRF_K,
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_RANK_DEPTH,
-    DEFAULT_RRF_K,
     build_policy_retriever,
     build_retrieval_task,
     create_query_embedding_model,
@@ -79,8 +78,6 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output-details", type=Path, help="Langfuse item 결과 JSONL")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--planner-query-cache", type=Path)
-    parser.add_argument("--planner-query-mode", choices=("first", "rrf"), default="first")
-    parser.add_argument("--planner-rrf-k", type=int, default=DEFAULT_RRF_K)
     parser.add_argument("--langfuse-dataset-name", default=DEFAULT_LANGFUSE_DATASET_NAME)
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument("--reranker-model")
@@ -139,7 +136,7 @@ def parse_args() -> argparse.Namespace:
             parser.error("--limit은 1 이상이어야 합니다.")
         if args.max_concurrency < 1:
             parser.error("--max-concurrency는 1 이상이어야 합니다.")
-        if args.planner_rrf_k < 1 or args.hybrid_rrf_k < 1:
+        if args.hybrid_rrf_k < 1:
             parser.error("RRF k는 1 이상이어야 합니다.")
         if args.bm25_candidate_k < args.rank_depth:
             parser.error("--bm25-candidate-k는 --rank-depth 이상이어야 합니다.")
@@ -151,12 +148,6 @@ def parse_args() -> argparse.Namespace:
             parser.error("--limit은 local smoke test에서만 사용할 수 있습니다.")
         if args.tracking == "langfuse" and not args.experiment_name:
             parser.error("--tracking langfuse에는 --experiment-name이 필요합니다.")
-        if args.planner_query_mode == "rrf" and not args.planner_query_cache:
-            parser.error("--planner-query-mode rrf에는 --planner-query-cache가 필요합니다.")
-        if args.planner_query_mode == "rrf" and args.retrieval_mode != "dense":
-            parser.error("Planner multi-query RRF는 dense 모드에서만 지원합니다.")
-        if args.planner_query_mode == "rrf" and args.reranker_model:
-            parser.error("현재 Planner RRF와 reranker를 동시에 사용할 수 없습니다.")
         if args.reranker_model and args.retrieval_mode != "dense":
             parser.error("reranker 실험은 dense 모드에서만 지원합니다.")
     else:
@@ -322,9 +313,9 @@ def run_langfuse(args: argparse.Namespace) -> None:
             build_mean_run_evaluator(item_metric_name="reciprocal_rank", run_metric_name="mrr"),
         ]
         if planner_records is not None:
-            item_evaluators.extend([planner_retriever_route_evaluator, planner_raw_fallback_evaluator])
+            item_evaluators.extend([planner_needs_retrieval_evaluator, planner_raw_fallback_evaluator])
             run_evaluators.extend([
-                build_mean_run_evaluator(item_metric_name="planner_retriever_route", run_metric_name="planner_retriever_route_rate"),
+                build_mean_run_evaluator(item_metric_name="planner_needs_retrieval", run_metric_name="planner_needs_retrieval_rate"),
                 build_mean_run_evaluator(item_metric_name="planner_raw_fallback", run_metric_name="planner_raw_fallback_rate"),
             ])
         if reranker is not None:
@@ -339,8 +330,6 @@ def run_langfuse(args: argparse.Namespace) -> None:
             task=build_retrieval_task(
                 retriever,
                 planner_records,
-                planner_query_mode=args.planner_query_mode,
-                rrf_k=args.planner_rrf_k,
                 reranker=reranker,
             ),
             evaluators=item_evaluators,
@@ -362,7 +351,7 @@ def run_langfuse(args: argparse.Namespace) -> None:
                 "hybrid_rrf_k": args.hybrid_rrf_k,
                 "reranker_model": args.reranker_model,
                 "today": evaluation_today.isoformat(),
-                "query_mode": f"planner_{args.planner_query_mode}" if planner_records else "raw",
+                "query_mode": "planner" if planner_records else "raw",
                 "planner_query_cache": str(project_path(args.planner_query_cache)) if args.planner_query_cache else None,
             },
         )

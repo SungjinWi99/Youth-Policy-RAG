@@ -32,6 +32,7 @@ class ObservabilityRuntime:
         *,
         user_id: str | None = None,
         session_id: str | None = None,
+        trace_id: str | None = None,
         tags: Sequence[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -60,12 +61,64 @@ class ObservabilityRuntime:
                 if value is not None
             })
 
-        config: dict[str, Any] = {"callbacks": [CallbackHandler()]}
+        callback_kwargs = (
+            {"trace_context": {"trace_id": trace_id}}
+            if trace_id
+            else {}
+        )
+        config: dict[str, Any] = {
+            "callbacks": [CallbackHandler(**callback_kwargs)]
+        }
         if langfuse_metadata:
             config["metadata"] = langfuse_metadata
         if tags:
             config["tags"] = list(tags)
         return config
+
+    def create_trace_id(self) -> str | None:
+        if self.client is None:
+            return None
+        return self.client.create_trace_id()
+
+    def record_user_feedback(
+        self,
+        *,
+        trace_id: str,
+        helpful: bool,
+        reason: str | None,
+        comment: str | None,
+        anonymous_user_id: str,
+    ) -> None:
+        if self.client is None:
+            raise RuntimeError("Langfuse 피드백 수집이 비활성화되어 있습니다.")
+
+        score_metadata = {
+            "source": "lan-user-feedback",
+            "anonymous_user_id": anonymous_user_id,
+        }
+        self.client.create_score(
+            name="user-thumbs",
+            value=1 if helpful else 0,
+            trace_id=trace_id,
+            score_id=self.client.create_trace_id(
+                seed=f"{trace_id}:user-thumbs"
+            ),
+            data_type="BOOLEAN",
+            comment=comment,
+            metadata=score_metadata,
+        )
+        if reason:
+            self.client.create_score(
+                name="user-feedback-reason",
+                value=reason,
+                trace_id=trace_id,
+                score_id=self.client.create_trace_id(
+                    seed=f"{trace_id}:user-feedback-reason"
+                ),
+                data_type="CATEGORICAL",
+                metadata=score_metadata,
+            )
+        self.client.flush()
 
     def flush(self) -> None:
         if self.client is not None:

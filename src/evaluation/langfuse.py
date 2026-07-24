@@ -114,12 +114,12 @@ def reciprocal_rank_evaluator(*, output, expected_output, **kwargs):
     )
 
 
-def planner_retriever_route_evaluator(*, output, **kwargs):
+def planner_needs_retrieval_evaluator(*, output, **kwargs):
     from langfuse import Evaluation
 
     return Evaluation(
-        name="planner_retriever_route",
-        value=1.0 if output.get("planner_route") == "retriever" else 0.0,
+        name="planner_needs_retrieval",
+        value=1.0 if output.get("planner_needs_retrieval") else 0.0,
     )
 
 

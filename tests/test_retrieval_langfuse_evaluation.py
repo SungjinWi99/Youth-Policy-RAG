@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.documents import Document
+from pydantic import ValidationError
 
 from src.evaluation.langfuse import (
     build_mean_run_evaluator,
@@ -8,10 +10,7 @@ from src.evaluation.langfuse import (
     reciprocal_rank_evaluator,
 )
 from src.evaluation.models import PlannerQueryRecord
-from src.evaluation.retrieval import (
-    build_retrieval_task,
-    reciprocal_rank_fusion,
-)
+from src.evaluation.retrieval import build_retrieval_task
 from src.rag.retrievers import (
     EnsemblePolicyRetriever,
     RetrievalRequest,
@@ -27,25 +26,6 @@ class FakeRetriever:
         return [
             Document(page_content="", metadata={"plcyNo": "POLICY-002"}),
             Document(page_content="", metadata={"plcyNo": "POLICY-001"}),
-        ]
-
-
-class QueryAwareFakeRetriever:
-    search_k = 3
-
-    def __init__(self):
-        self.calls = []
-        self.results = {
-            "query-1": ["A", "B", "C"],
-            "query-2": ["B", "D", "A"],
-            "query-3": ["B", "E", "F"],
-        }
-
-    def retrieve(self, request):
-        self.calls.append(request)
-        return [
-            Document(page_content="", metadata={"plcyNo": policy_id})
-            for policy_id in self.results[request.query]
         ]
 
 
@@ -81,6 +61,24 @@ class StaticSourceRetriever:
 
     async def aretrieve(self, request):
         return self.retrieve(request)
+
+
+def test_planner_query_record_rejects_legacy_schema():
+    with pytest.raises(ValidationError):
+        PlannerQueryRecord.model_validate({
+            "schema_version": 1,
+            "case_id": "case-1",
+            "raw_query": "월세 지원",
+            "user_profile": {},
+            "planner_route": "retriever",
+            "answer_strategy": "policy_recommendation",
+            "retrieval_queries": ["월세 지원"],
+            "route_reason": "검색 필요",
+            "planner_provider": "deepseek",
+            "planner_model": "deepseek-v4-flash",
+            "planner_prompt_sha256": "hash",
+            "generated_at": "2026-07-14T00:00:00+00:00",
+        })
 
 
 def test_retrieval_task_returns_ranked_policy_ids():
@@ -165,17 +163,17 @@ def test_retrieval_task_uses_ensemble_request_api_and_records_sources():
     )]
 
 
-def test_retrieval_task_uses_first_planner_query():
+def test_retrieval_task_uses_current_planner_query():
     retriever = FakeRetriever()
     planner_records = {
         "case-1": PlannerQueryRecord(
             case_id="case-1",
             raw_query="월세 지원 있어?",
             user_profile={"region": "서울"},
-            planner_route="retriever",
-            answer_strategy="policy_recommendation",
-            retrieval_queries=["서울 월세 지원", "서울 주거비 지원"],
-            route_reason="새 정책 검색이 필요함",
+            user_requirement="서울 청년의 월세 지원 정책 탐색",
+            needs_retrieval=True,
+            retrieval_reason="새 정책 검색이 필요함",
+            retrieval_query="서울 월세 지원",
             planner_provider="deepseek",
             planner_model="deepseek-v4-flash",
             planner_prompt_sha256="hash",
@@ -194,25 +192,23 @@ def test_retrieval_task_uses_first_planner_query():
     ))
 
     assert output["executed_query"] == "서울 월세 지원"
-    assert output["planner_queries"] == [
-        "서울 월세 지원",
-        "서울 주거비 지원",
-    ]
+    assert output["planner_retrieval_query"] == "서울 월세 지원"
+    assert output["planner_needs_retrieval"] is True
     assert output["retrieved_policy_ids"] == ["POLICY-002", "POLICY-001"]
     assert retriever.calls[0].query == "서울 월세 지원"
 
 
-def test_retrieval_task_respects_planner_agent_route():
+def test_retrieval_task_respects_planner_no_retrieval_decision():
     retriever = FakeRetriever()
     planner_records = {
         "case-1": PlannerQueryRecord(
             case_id="case-1",
             raw_query="안녕",
             user_profile={},
-            planner_route="agent",
-            answer_strategy="brief_reply",
-            retrieval_queries=[],
-            route_reason="검색이 필요하지 않음",
+            user_requirement="인사",
+            needs_retrieval=False,
+            retrieval_reason="검색이 필요하지 않음",
+            retrieval_query="",
             planner_provider="deepseek",
             planner_model="deepseek-v4-flash",
             planner_prompt_sha256="hash",
@@ -238,10 +234,10 @@ def test_same_planner_query_as_raw_is_not_a_fallback():
             case_id="case-1",
             raw_query="same query",
             user_profile={},
-            planner_route="retriever",
-            answer_strategy="policy_recommendation",
-            retrieval_queries=["same query", "alternative query"],
-            route_reason="search",
+            user_requirement="정책 검색",
+            needs_retrieval=True,
+            retrieval_reason="search",
+            retrieval_query="same query",
             planner_provider="deepseek",
             planner_model="deepseek-v4-flash",
             planner_prompt_sha256="hash",
@@ -300,61 +296,3 @@ def test_run_evaluator_averages_item_scores():
 
     assert result.name == "mrr"
     assert result.value == 0.75
-
-
-def test_reciprocal_rank_fusion_is_deterministic():
-    fused = reciprocal_rank_fusion(
-        [
-            ["A", "B", "C"],
-            ["B", "D", "A"],
-            ["B", "E", "F"],
-        ],
-        rrf_k=60,
-        limit=3,
-    )
-
-    assert [policy_id for policy_id, _ in fused] == ["B", "A", "D"]
-    assert fused[0][1] == 1 / 62 + 1 / 61 + 1 / 61
-
-
-def test_retrieval_task_fuses_all_planner_queries_with_rrf():
-    retriever = QueryAwareFakeRetriever()
-    planner_records = {
-        "case-1": PlannerQueryRecord(
-            case_id="case-1",
-            raw_query="raw query",
-            user_profile={},
-            planner_route="retriever",
-            answer_strategy="policy_recommendation",
-            retrieval_queries=["query-1", "query-2", "query-3"],
-            route_reason="search",
-            planner_provider="deepseek",
-            planner_model="deepseek-v4-flash",
-            planner_prompt_sha256="hash",
-            generated_at="2026-07-14T00:00:00+00:00",
-        ),
-    }
-    task = build_retrieval_task(
-        retriever,
-        planner_records,
-        planner_query_mode="rrf",
-        rrf_k=60,
-    )
-
-    output = task(item=SimpleNamespace(
-        input={"user_input": "raw query", "user_profile": {}},
-        metadata={"case_id": "case-1"},
-    ))
-
-    assert output["executed_queries"] == ["query-1", "query-2", "query-3"]
-    assert output["retrieved_policy_ids"] == ["B", "A", "D"]
-    assert output["per_query_retrieved_policy_ids"] == [
-        ["A", "B", "C"],
-        ["B", "D", "A"],
-        ["B", "E", "F"],
-    ]
-    assert [call.query for call in retriever.calls] == [
-        "query-1",
-        "query-2",
-        "query-3",
-    ]

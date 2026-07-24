@@ -1,6 +1,6 @@
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class EvaluationCase(BaseModel):
@@ -28,13 +28,16 @@ class EvaluationCase(BaseModel):
 
 
 class PlannerQueryRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[2] = 2
     case_id: str = Field(min_length=1)
     raw_query: str = Field(min_length=1)
     user_profile: dict[str, Any] = Field(default_factory=dict)
-    planner_route: str
-    answer_strategy: str
-    retrieval_queries: list[str] = Field(default_factory=list)
-    route_reason: str
+    user_requirement: str
+    needs_retrieval: bool
+    retrieval_reason: str
+    retrieval_query: str
     planner_provider: str
     planner_model: str
     planner_prompt_sha256: str

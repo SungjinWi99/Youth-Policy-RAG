@@ -43,10 +43,13 @@ TRACE_TAGS = [
 
 class AutomatedChecks(BaseModel):
     expected_retrieval_count: int | None = Field(default=None, ge=0)
+    min_retrieval_count: int | None = Field(default=None, ge=0)
     max_retrieval_count: int | None = Field(default=None, ge=0)
     preserve_previous_policy_ids: bool = False
+    require_new_policy_ids_if_selected: bool = False
     no_duplicate_policy_ids: bool = False
     no_duplicate_policy_titles: bool = False
+    forbidden_policy_title_terms: list[str] = Field(default_factory=list)
 
 
 class CaseTurn(BaseModel):
@@ -173,6 +176,13 @@ def evaluate_automated_checks(
             checks.expected_retrieval_count,
             retrieval_count,
         )
+    if checks.min_retrieval_count is not None:
+        add(
+            "min_retrieval_count",
+            retrieval_count >= checks.min_retrieval_count,
+            f">= {checks.min_retrieval_count}",
+            retrieval_count,
+        )
     if checks.max_retrieval_count is not None:
         add(
             "max_retrieval_count",
@@ -187,6 +197,22 @@ def evaluate_automated_checks(
             and policy_ids == previous_policy_ids,
             previous_policy_ids,
             policy_ids,
+        )
+    if checks.require_new_policy_ids_if_selected:
+        new_policy_ids = [
+            policy_id
+            for policy_id in policy_ids
+            if policy_id not in (previous_policy_ids or [])
+        ]
+        add(
+            "require_new_policy_ids_if_selected",
+            not policy_ids
+            or (bool(previous_policy_ids) and bool(new_policy_ids)),
+            (
+                "no policies selected or at least one policy ID not selected "
+                "in the previous turn"
+            ),
+            new_policy_ids,
         )
     if checks.no_duplicate_policy_ids:
         add(
@@ -206,6 +232,23 @@ def evaluate_automated_checks(
             len(normalized_titles) == len(set(normalized_titles)),
             "all unique",
             policy_titles,
+        )
+    if checks.forbidden_policy_title_terms:
+        normalized_terms = [
+            term.casefold().strip()
+            for term in checks.forbidden_policy_title_terms
+            if term.strip()
+        ]
+        matched_titles = [
+            title
+            for title in policy_titles
+            if any(term in title.casefold() for term in normalized_terms)
+        ]
+        add(
+            "forbidden_policy_title_terms",
+            not matched_titles,
+            f"no titles containing {checks.forbidden_policy_title_terms}",
+            matched_titles,
         )
     return results
 

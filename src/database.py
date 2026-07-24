@@ -4,6 +4,7 @@ from sqlmodel import SQLModel, Session, create_engine
 
 from src.chat.models import ConversationThread  # noqa: F401
 from src.config import load_config
+from src.session.models import AnonymousSession  # noqa: F401
 from src.user.models import UserProfile  # noqa: F401
 
 

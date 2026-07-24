@@ -133,6 +133,7 @@ class PolicyRagGraph:
         thread_id: str | None,
         *,
         trace_user_id: str | None = None,
+        trace_id: str | None = None,
         trace_tags: Sequence[str] | None = None,
         trace_metadata: dict | None = None,
     ) -> dict:
@@ -142,6 +143,7 @@ class PolicyRagGraph:
             self.trace_config_factory(
                 user_id=trace_user_id,
                 session_id=resolved_thread_id,
+                trace_id=trace_id,
                 tags=trace_tags or ["youth-policy-rag"],
                 metadata={
                     "langgraph_thread_id": resolved_thread_id,
@@ -204,6 +206,7 @@ class PolicyRagGraph:
         exclude_expired: bool = True,
         *,
         trace_user_id: str | None = None,
+        trace_id: str | None = None,
         trace_tags: Sequence[str] | None = None,
         trace_metadata: dict | None = None,
     ) -> RAGResult:
@@ -216,6 +219,7 @@ class PolicyRagGraph:
             config=self._build_graph_config(
                 thread_id,
                 trace_user_id=trace_user_id,
+                trace_id=trace_id,
                 trace_tags=trace_tags,
                 trace_metadata=trace_metadata,
             ),
@@ -233,6 +237,7 @@ class PolicyRagGraph:
         exclude_expired: bool = True,
         *,
         trace_user_id: str | None = None,
+        trace_id: str | None = None,
         trace_tags: Sequence[str] | None = None,
         trace_metadata: dict | None = None,
     ) -> RAGResult:
@@ -245,6 +250,7 @@ class PolicyRagGraph:
             config=self._build_graph_config(
                 thread_id,
                 trace_user_id=trace_user_id,
+                trace_id=trace_id,
                 trace_tags=trace_tags,
                 trace_metadata=trace_metadata,
             ),
@@ -262,6 +268,7 @@ class PolicyRagGraph:
         exclude_expired: bool = True,
         *,
         trace_user_id: str | None = None,
+        trace_id: str | None = None,
         trace_tags: Sequence[str] | None = None,
         trace_metadata: dict | None = None,
     ) -> AsyncIterator[str]:
@@ -273,6 +280,7 @@ class PolicyRagGraph:
         config = self._build_graph_config(
             thread_id,
             trace_user_id=trace_user_id,
+            trace_id=trace_id,
             trace_tags=trace_tags,
             trace_metadata=trace_metadata,
         )
@@ -303,7 +311,10 @@ class PolicyRagGraph:
                                 latest_documents,
                             )
                         )
-                        yield self._metadata_event(latest_documents)
+                        yield self._metadata_event(
+                            latest_documents,
+                            trace_id=trace_id,
+                        )
                         metadata_sent = True
 
                 retriever_update = update.get("retriever")
@@ -326,13 +337,19 @@ class PolicyRagGraph:
                         not metadata_sent
                         and (latest_documents or final_attempt)
                     ):
-                        yield self._metadata_event(latest_documents)
+                        yield self._metadata_event(
+                            latest_documents,
+                            trace_id=trace_id,
+                        )
                         metadata_sent = True
 
                 generator_update = update.get("answer_generator")
                 if generator_update and not streamed_answer:
                     if not metadata_sent:
-                        yield self._metadata_event(latest_documents)
+                        yield self._metadata_event(
+                            latest_documents,
+                            trace_id=trace_id,
+                        )
                         metadata_sent = True
                     answer = generator_update["answer"]
                     streamed_answer = answer
@@ -349,23 +366,70 @@ class PolicyRagGraph:
                 if not chunk:
                     continue
                 if not metadata_sent:
-                    yield self._metadata_event(latest_documents)
+                    yield self._metadata_event(
+                        latest_documents,
+                        trace_id=trace_id,
+                    )
                     metadata_sent = True
                 streamed_answer += chunk
                 yield self._sse_event("chunk", chunk)
 
         if not metadata_sent:
-            yield self._metadata_event(latest_documents)
+            yield self._metadata_event(
+                latest_documents,
+                trace_id=trace_id,
+            )
         yield self._sse_event("done")
 
-    def _metadata_event(self, documents: Sequence[Document]) -> str:
+    async def get_conversation(self, thread_id: str) -> dict:
+        snapshot = await self.graph.aget_state(
+            self._build_graph_config(thread_id)
+        )
+        messages = []
+        for message in snapshot.values.get("messages", []):
+            message_type = getattr(message, "type", "")
+            if message_type == "human":
+                role = "user"
+            elif message_type == "ai":
+                role = "assistant"
+            else:
+                continue
+
+            content = getattr(message, "content", "")
+            if not isinstance(content, str):
+                content = str(content)
+            messages.append({"role": role, "content": content})
+
+        documents = snapshot.values.get(
+            "documents",
+            snapshot.values.get("active_policies", []),
+        )
+        active_policy_ids = [
+            str(document.metadata["plcyNo"])
+            for document in documents
+            if document.metadata.get("plcyNo")
+        ]
+        return {
+            "messages": messages,
+            "active_policy_ids": active_policy_ids,
+        }
+
+    def _metadata_event(
+        self,
+        documents: Sequence[Document],
+        *,
+        trace_id: str | None = None,
+    ) -> str:
         result = self.build_result(answer="", documents=documents)
+        data = {
+            "contexts": result.contexts,
+            "retrieved_policy_ids": result.retrieved_policy_ids,
+        }
+        if trace_id:
+            data["trace_id"] = trace_id
         return self._sse_event(
             "metadata",
-            {
-                "contexts": result.contexts,
-                "retrieved_policy_ids": result.retrieved_policy_ids,
-            },
+            data,
         )
 
     @staticmethod
