@@ -2,7 +2,10 @@ import sys
 import types
 
 from src.config import load_config
-import src.observability as observability
+from src.observability import (
+    ObservabilityRuntime,
+    create_observability_runtime,
+)
 
 
 class FakeLangfuse:
@@ -21,37 +24,65 @@ class FakeLangfuse:
         self.shutdown_calls += 1
 
 
-def test_initialize_langfuse_uses_app_release_and_environment(monkeypatch):
+def test_runtime_owns_langfuse_lifecycle(monkeypatch):
     fake_module = types.ModuleType("langfuse")
     fake_module.Langfuse = FakeLangfuse
     monkeypatch.setitem(sys.modules, "langfuse", fake_module)
     monkeypatch.setenv("LANGFUSE_TRACING", "true")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
-    monkeypatch.setattr(observability, "_langfuse_client", None)
     FakeLangfuse.instances.clear()
 
     config = load_config()
-    first = observability.initialize_langfuse(config)
-    second = observability.initialize_langfuse(config)
+    runtime = create_observability_runtime(config)
 
-    assert first is second
     assert len(FakeLangfuse.instances) == 1
-    assert first.kwargs == {
+    assert runtime.client.kwargs == {
         "release": config.app.release,
         "environment": config.app.environment,
     }
 
-    observability.flush_langfuse()
-    observability.shutdown_langfuse()
+    client = runtime.client
+    runtime.flush()
+    runtime.shutdown()
+    runtime.shutdown()
 
-    assert first.flush_calls == 1
-    assert first.shutdown_calls == 1
-    assert observability._langfuse_client is None
+    assert client.flush_calls == 1
+    assert client.shutdown_calls == 1
+    assert runtime.client is None
 
 
-def test_initialize_langfuse_is_noop_when_tracing_is_disabled(monkeypatch):
+def test_runtime_is_noop_when_tracing_is_disabled(monkeypatch):
     monkeypatch.delenv("LANGFUSE_TRACING", raising=False)
-    monkeypatch.setattr(observability, "_langfuse_client", None)
 
-    assert observability.initialize_langfuse(load_config()) is None
+    runtime = create_observability_runtime(load_config())
+
+    assert isinstance(runtime, ObservabilityRuntime)
+    assert runtime.client is None
+    assert runtime.build_trace_config(user_id="user") == {}
+
+
+def test_runtime_builds_request_trace_config(monkeypatch):
+    class FakeCallbackHandler:
+        pass
+
+    langchain_module = types.ModuleType("langfuse.langchain")
+    langchain_module.CallbackHandler = FakeCallbackHandler
+    monkeypatch.setitem(sys.modules, "langfuse.langchain", langchain_module)
+    runtime = ObservabilityRuntime(client=FakeLangfuse())
+
+    config = runtime.build_trace_config(
+        user_id="user-1",
+        session_id="session-1",
+        tags=["rag"],
+        metadata={"case_id": "case-1"},
+    )
+
+    assert isinstance(config["callbacks"][0], FakeCallbackHandler)
+    assert config["tags"] == ["rag"]
+    assert config["metadata"] == {
+        "langfuse_user_id": "user-1",
+        "langfuse_session_id": "session-1",
+        "langfuse_tags": ["rag"],
+        "case_id": "case-1",
+    }

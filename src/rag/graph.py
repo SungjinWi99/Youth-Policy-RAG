@@ -1,13 +1,15 @@
 import json
 from collections.abc import AsyncIterator, Sequence
-from typing import Literal
+from typing import Callable, Literal
 from uuid import uuid4
 
-from langchain_core.runnables import RunnableLambda
 from langchain_core.documents import Document
-from langgraph.graph import START, END, StateGraph
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
+from langchain_core.runnables import Runnable
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Overwrite, Send
 
+from src.checkpointer import AsyncCompatibleSqliteSaver
 from src.rag.state import (
     RAGGraphInput,
     RAGGraphOutput,
@@ -15,421 +17,368 @@ from src.rag.state import (
     RAGResult,
     RAGUserProfile,
 )
-from src.rag.nodes.retriever import (
-    PolicyRetriever,
-    RetrievalRequest,
-)
-from src.rag.nodes.agent import PolicyAgent
-from src.rag.nodes.turn_planner import TurnPlanner
-from src.checkpointer import AsyncCompatibleSqliteSaver
-from src.rag.utils.formatting import format_doc
-from src.observability import build_langfuse_config
+from src.rag.utils import format_doc
+
 
 class PolicyRagGraph:
-  def __init__(self,
-               planner: TurnPlanner,
-               retriever: PolicyRetriever,
-               agent: PolicyAgent,
-               checkpointer: AsyncCompatibleSqliteSaver,
-               planner_history_window: int = 6,
-               agent_history_window: int = 10,
-               ):
-    self.planner = planner
-    self.retriever = retriever
-    self.agent = agent
-    self.checkpointer = checkpointer
-    self.planner_history_window = planner_history_window
-    self.agent_history_window = agent_history_window
-    self.graph = self._compile_graph()
+    def __init__(
+        self,
+        *,
+        retrieval_planner: Runnable,
+        retriever: Runnable,
+        policy_checker: Runnable,
+        policy_selector: Runnable,
+        answer_generator: Runnable,
+        checkpointer: AsyncCompatibleSqliteSaver,
+        max_retrieval_retries: int = 3,
+        trace_config_factory: Callable[..., dict] | None = None,
+    ):
+        if max_retrieval_retries < 0:
+            raise ValueError("max_retrieval_retries는 0 이상이어야 합니다.")
+        self.retrieval_planner = retrieval_planner
+        self.retriever = retriever
+        self.policy_checker = policy_checker
+        self.policy_selector = policy_selector
+        self.answer_generator = answer_generator
+        self.checkpointer = checkpointer
+        self.max_retrieval_retries = max_retrieval_retries
+        self.trace_config_factory = trace_config_factory
+        self.graph = self._compile_graph()
 
-  def _compile_graph(self):
-    workflow = StateGraph(
-      state_schema=RAGGraphState,
-      input_schema=RAGGraphInput,
-      output_schema=RAGGraphOutput
-    )
+    def _compile_graph(self):
+        workflow = StateGraph(
+            state_schema=RAGGraphState,
+            input_schema=RAGGraphInput,
+            output_schema=RAGGraphOutput,
+        )
+        workflow.add_node("retrieval_planner", self.retrieval_planner)
+        workflow.add_node("retriever", self.retriever)
+        workflow.add_node("policy_checker", self.policy_checker)
+        workflow.add_node("policy_selector", self.policy_selector)
+        workflow.add_node("answer_generator", self.answer_generator)
 
-    workflow.add_node(
-      "planner",
-      RunnableLambda(
-        self._planner_node,
-        afunc = self._aplanner_node
-      )
-    )
-    workflow.add_node(
-      "retriever",
-      RunnableLambda(
-        self._retrieve_node,
-        afunc = self._aretrieve_node
-      )
-    )
-    workflow.add_node(
-      "agent",
-      RunnableLambda(
-        self._agent_node,
-        afunc = self._aagent_node
-      )
-    )
+        workflow.add_edge(START, "retrieval_planner")
+        workflow.add_conditional_edges(
+            "retrieval_planner",
+            self._select_after_planner,
+            {
+                "retriever": "retriever",
+                "answer_generator": "answer_generator",
+            },
+        )
+        workflow.add_conditional_edges(
+            "retriever",
+            self._dispatch_retrieved_policies,
+            ["policy_checker", "policy_selector"],
+        )
+        workflow.add_edge("policy_checker", "policy_selector")
+        workflow.add_conditional_edges(
+            "policy_selector",
+            self._select_after_policy_check,
+            {
+                "retry": "retrieval_planner",
+                "answer_generator": "answer_generator",
+            },
+        )
+        workflow.add_edge("answer_generator", END)
+        return workflow.compile(
+            checkpointer=self.checkpointer,
+            name="youth_policy_rag",
+        )
 
-    workflow.add_edge(START, "planner")
-    workflow.add_conditional_edges("planner", self._select_route,
-                                   {
-                                     "retriever": "retriever",
-                                     "agent": "agent"
-                                   })
-    workflow.add_edge("retriever", "agent")
-    workflow.add_edge("agent", END)
-    return workflow.compile(
-      checkpointer=self.checkpointer,
-      name="youth_policy_rag"
-    )
+    @staticmethod
+    def _select_after_planner(
+        state: RAGGraphState,
+    ) -> Literal["retriever", "answer_generator"]:
+        return (
+            "retriever"
+            if state.get("needs_retrieval", False)
+            else "answer_generator"
+        )
 
-  def _build_graph_config(self,
-                          thread_id: str | None,
-                          *,
-                          trace_user_id: str | None = None,
-                          trace_tags: Sequence[str] | None = None,
-                          trace_metadata: dict | None = None,
-                          ) -> dict:
+    @staticmethod
+    def _dispatch_retrieved_policies(
+        state: RAGGraphState,
+    ) -> list[Send] | Literal["policy_selector"]:
+        documents = state.get("retrieved_policies", [])
+        if not documents:
+            return "policy_selector"
+        return [
+            Send(
+                "policy_checker",
+                {
+                    "user_requirement": state["user_requirement"],
+                    "current_question": state["user_input"],
+                    "user_profile": state["user_profile"],
+                    "policy": document,
+                    "retrieval_rank": rank,
+                    "retrieval_round": state.get("retrieval_count", 1),
+                },
+            )
+            for rank, document in enumerate(documents, start=1)
+        ]
+
+    def _select_after_policy_check(
+        self,
+        state: RAGGraphState,
+    ) -> Literal["retry", "answer_generator"]:
+        if state.get("documents"):
+            return "answer_generator"
+        if state.get("retrieval_count", 0) <= self.max_retrieval_retries:
+            return "retry"
+        return "answer_generator"
+
+    def _build_graph_config(
+        self,
+        thread_id: str | None,
+        *,
+        trace_user_id: str | None = None,
+        trace_tags: Sequence[str] | None = None,
+        trace_metadata: dict | None = None,
+    ) -> dict:
         resolved_thread_id = thread_id or str(uuid4())
         config = {"configurable": {"thread_id": resolved_thread_id}}
-        langfuse_config = build_langfuse_config(
-          user_id=trace_user_id,
-          session_id=resolved_thread_id,
-          tags=trace_tags or ["youth-policy-rag"],
-          metadata={
-            "langgraph_thread_id": resolved_thread_id,
-            **(trace_metadata or {}),
-          },
+        trace_config = (
+            self.trace_config_factory(
+                user_id=trace_user_id,
+                session_id=resolved_thread_id,
+                tags=trace_tags or ["youth-policy-rag"],
+                metadata={
+                    "langgraph_thread_id": resolved_thread_id,
+                    **(trace_metadata or {}),
+                },
+            )
+            if self.trace_config_factory
+            else {}
         )
-        for key, value in langfuse_config.items():
-          if key == "metadata":
-            config.setdefault("metadata", {}).update(value)
-          elif key == "callbacks":
-            config.setdefault("callbacks", []).extend(value)
-          else:
-            config[key] = value
+        for key, value in trace_config.items():
+            if key == "metadata":
+                config.setdefault("metadata", {}).update(value)
+            elif key == "callbacks":
+                config.setdefault("callbacks", []).extend(value)
+            else:
+                config[key] = value
         return config
 
-  def build_graph_input(self,
-                        *,
-                        user_input: str,
-                        user_profile: RAGUserProfile,
-                        exclude_expired: bool
-  ) -> RAGGraphInput:
-    return {
-      "user_input": user_input,
-      "user_profile": dict(user_profile),
-      "exclude_expired": exclude_expired,
-      "messages": [HumanMessage(content=user_input)]
-    }
-
-  def _window_history(self, messages: Sequence, window: int) -> list:
-    history = list(messages)[:-1]
-    if window <= 0:
-      return []
-    return history[-window:]
-
-  def build_result(self,
-                         *,
-                         answer: str,
-                         documents: list[Document]
-  ) -> RAGResult:
-    return RAGResult(
-      answer = answer,
-      contexts=[
-        format_doc(document, index)
-        for index, document in enumerate(documents, start=1)
-      ],
-      retrieved_policy_ids=[
-        document.metadata['plcyNo']
-        for document in documents
-        if document.metadata.get('plcyNo')
-      ]
-    )
-
-  # Planner
-  def _planner_node(self, state: RAGGraphState):
-    documents = state.get('documents', [])
-    chat_history = self._window_history(
-      state.get('messages', []),
-      self.planner_history_window
-    )
-    result = self.planner.decide(
-      current_question=state['user_input'],
-      user_profile=state['user_profile'],
-      documents = documents,
-      chat_history = chat_history
-    )
-    return {
-      "route": result.route,
-      "route_reason": result.route_reason,
-      "answer_strategy": result.answer_strategy,
-      "retrieval_queries": result.retrieval_queries,
-    }
-
-  async def _aplanner_node(self, state: RAGGraphState):
-    documents = state.get('documents', [])
-    chat_history = self._window_history(
-      state.get('messages', []),
-      self.planner_history_window
-    )
-    result = await self.planner.adecide(
-      current_question=state['user_input'],
-      user_profile=state['user_profile'],
-      documents = documents,
-      chat_history = chat_history
-    )
-    return {
-      "route": result.route,
-      "route_reason": result.route_reason,
-      "answer_strategy": result.answer_strategy,
-      "retrieval_queries": result.retrieval_queries,
-    }
-
-  def _select_route(self, state:RAGGraphState) -> Literal['retriever', 'agent']:
-    return state['route']
-
-  # Retriever
-  def _retrieve_node(self, state: RAGGraphState):
-    documents = []
-    for query in state.get('retrieval_queries', []) or [state['user_input']]:
-      documents = self.retriever.retrieve(RetrievalRequest(
-        query=query,
-        user_profile=state['user_profile'],
-        exclude_expired=state['exclude_expired'],
-      ))
-      if documents:
-        break
-    return {"documents": documents}
-
-  async def _aretrieve_node(self, state: RAGGraphState):
-    documents = []
-    for query in state.get('retrieval_queries', []) or [state['user_input']]:
-      documents = await self.retriever.aretrieve(RetrievalRequest(
-        query=query,
-        user_profile=state['user_profile'],
-        exclude_expired=state['exclude_expired'],
-      ))
-      if documents:
-        break
-    return {"documents": documents}
-
-  # Agent
-  def _agent_node(self, state: RAGGraphState):
-    documents = state.get('documents', [])
-    chat_history = self._window_history(
-      state.get('messages', []),
-      self.agent_history_window
-    )
-    result = self.agent.invoke(user_input = state['user_input'],
-                             user_profile = state['user_profile'],
-                             documents = documents,
-                             chat_history = chat_history,
-                             answer_strategy = state.get(
-                               'answer_strategy',
-                               'policy_recommendation'
-                             ))
-    return {
-      "answer": result,
-      "messages": [AIMessage(content=result)]
-    }
-
-
-  async def _aagent_node(self, state: RAGGraphState):
-    documents = state.get('documents', [])
-    chat_history = self._window_history(
-      state.get('messages', []),
-      self.agent_history_window
-    )
-    result = await self.agent.ainvoke(user_input = state['user_input'],
-                             user_profile = state['user_profile'],
-                             documents = documents,
-                             chat_history = chat_history,
-                             answer_strategy = state.get(
-                               'answer_strategy',
-                               'policy_recommendation'
-                             ))
-    return {
-      "answer": result,
-      "messages": [AIMessage(content=result)]
-    }
-
-
-  def generate_answer(self,
-                      user_input: str,
-                      user_profile: RAGUserProfile,
-                      thread_id: str | None = None,
-                      exclude_expired: bool = True,
-                      *,
-                      trace_user_id: str | None = None,
-                      trace_tags: Sequence[str] | None = None,
-                      trace_metadata: dict | None = None,
-  ) -> RAGResult:
-    graph_output = self.graph.invoke(
-      self.build_graph_input(
-        user_input=user_input,
-        user_profile=user_profile,
-        exclude_expired=exclude_expired
-      ),
-      config = self._build_graph_config(
-        thread_id,
-        trace_user_id=trace_user_id,
-        trace_tags=trace_tags,
-        trace_metadata=trace_metadata,
-      )
-    )
-    return self.build_result(
-      answer=graph_output['answer'],
-      documents=graph_output['documents']
-    )
-
-  async def agenerate_answer(self,
-                      user_input: str,
-                      user_profile: RAGUserProfile,
-                      thread_id: str | None = None,
-                      exclude_expired: bool = True,
-                      *,
-                      trace_user_id: str | None = None,
-                      trace_tags: Sequence[str] | None = None,
-                      trace_metadata: dict | None = None,
-  ) -> RAGResult:
-    graph_output = await self.graph.ainvoke(
-      self.build_graph_input(
-        user_input=user_input,
-        user_profile=user_profile,
-        exclude_expired=exclude_expired
-      ),
-      config = self._build_graph_config(
-        thread_id,
-        trace_user_id=trace_user_id,
-        trace_tags=trace_tags,
-        trace_metadata=trace_metadata,
-      )
-    )
-    return self.build_result(
-      answer=graph_output['answer'],
-      documents=graph_output['documents']
-    )
-
-  async def stream_answer(self,
-                          user_input: str,
-                          user_profile: RAGUserProfile,
-                          thread_id: str | None = None,
-                          exclude_expired: bool = True,
-                          *,
-                          trace_user_id: str | None = None,
-                          trace_tags: Sequence[str] | None = None,
-                          trace_metadata: dict | None = None,
-  ) -> AsyncIterator[str]:
-    graph_input = self.build_graph_input(
-      user_input=user_input,
-      user_profile=user_profile,
-      exclude_expired=exclude_expired
-    )
-    streamed_answer = ""
-
-    config = self._build_graph_config(
-      thread_id,
-      trace_user_id=trace_user_id,
-      trace_tags=trace_tags,
-      trace_metadata=trace_metadata,
-    )
-    previous_snapshot = await self.graph.aget_state(config)
-    previous_documents = previous_snapshot.values.get("documents", [])
-    metadata_sent = False
-
-    async for part in self.graph.astream(
-      graph_input,
-      config=config,
-      stream_mode=["updates", "messages"],
-      version="v2"
-    ):
-      if part['type'] == "updates":
-        planner_update = part["data"].get("planner")
-        if (
-          planner_update
-          and planner_update.get("route") == "agent"
-        ):
-          result_metadata = self.build_result(
-            answer="",
-            documents=previous_documents
-          )
-          yield self._sse_event(
-            event_type="metadata",
-            data={
-              "contexts": result_metadata.contexts,
-              "retrieved_policy_ids": (
-                result_metadata.retrieved_policy_ids
-              )
-            }
-          )
-          metadata_sent = True
-
-        retrieve_update = part["data"].get('retriever')
-        if retrieve_update:
-          result_metadata = self.build_result(
-            answer="",
-            documents=retrieve_update['documents'])
-          yield self._sse_event(event_type="metadata",
-                                data={
-                                   "contexts": result_metadata.contexts,
-                                   "retrieved_policy_ids": (
-                                      result_metadata.retrieved_policy_ids
-                                   )
-                                })
-          metadata_sent = True
-        agent_update = part['data'].get('agent')
-        if agent_update and not streamed_answer:
-           answer = agent_update['answer']
-           streamed_answer = answer
-           yield self._sse_event("chunk", answer)
-
-      if part['type'] == 'messages':
-         message_chunk, metadata = part['data']
-         if (
-            metadata.get('langgraph_node') != 'agent'
-            or metadata.get('ls_model_type') != 'chat'
-         ): continue
-
-         chunk = message_chunk.text
-         if not chunk: continue
-
-         streamed_answer += chunk
-         yield self._sse_event(event_type="chunk", data=chunk)
-
-    if not metadata_sent:
-      snapshot = await self.graph.aget_state(config)
-      result_metadata = self.build_result(
-        answer="",
-        documents=snapshot.values.get("documents", [])
-      )
-      yield self._sse_event(
-        event_type="metadata",
-        data={
-          "contexts": result_metadata.contexts,
-          "retrieved_policy_ids": result_metadata.retrieved_policy_ids
+    @staticmethod
+    def build_graph_input(
+        *,
+        user_input: str,
+        user_profile: RAGUserProfile,
+        exclude_expired: bool,
+    ) -> RAGGraphInput:
+        return {
+            "user_input": user_input,
+            "user_profile": dict(user_profile),
+            "exclude_expired": exclude_expired,
+            "messages": [HumanMessage(content=user_input)],
+            "retrieval_count": 0,
+            "retrieved_policies": [],
+            "checked_policies": Overwrite([]),
         }
-      )
 
-    yield self._sse_event("done")
+    @staticmethod
+    def build_result(
+        *,
+        answer: str,
+        documents: Sequence[Document],
+    ) -> RAGResult:
+        return RAGResult(
+            answer=answer,
+            contexts=[
+                format_doc(document, index)
+                for index, document in enumerate(documents, start=1)
+            ],
+            retrieved_policy_ids=[
+                str(document.metadata["plcyNo"])
+                for document in documents
+                if document.metadata.get("plcyNo")
+            ],
+        )
 
-  @staticmethod
-  def _sse_event(
-        event_type: str,
-        data=None,
-    ) -> str:
-    event = {"type": event_type}
-    if data is not None:
-        event["data"] = data
-    return (
-        f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-    )
+    def generate_answer(
+        self,
+        user_input: str,
+        user_profile: RAGUserProfile,
+        thread_id: str | None = None,
+        exclude_expired: bool = True,
+        *,
+        trace_user_id: str | None = None,
+        trace_tags: Sequence[str] | None = None,
+        trace_metadata: dict | None = None,
+    ) -> RAGResult:
+        output = self.graph.invoke(
+            self.build_graph_input(
+                user_input=user_input,
+                user_profile=user_profile,
+                exclude_expired=exclude_expired,
+            ),
+            config=self._build_graph_config(
+                thread_id,
+                trace_user_id=trace_user_id,
+                trace_tags=trace_tags,
+                trace_metadata=trace_metadata,
+            ),
+        )
+        return self.build_result(
+            answer=output["answer"],
+            documents=output.get("documents", []),
+        )
 
-  def delete_conversation(self, thread_id: str) -> None:
-      self.checkpointer.delete_thread(thread_id)
+    async def agenerate_answer(
+        self,
+        user_input: str,
+        user_profile: RAGUserProfile,
+        thread_id: str | None = None,
+        exclude_expired: bool = True,
+        *,
+        trace_user_id: str | None = None,
+        trace_tags: Sequence[str] | None = None,
+        trace_metadata: dict | None = None,
+    ) -> RAGResult:
+        output = await self.graph.ainvoke(
+            self.build_graph_input(
+                user_input=user_input,
+                user_profile=user_profile,
+                exclude_expired=exclude_expired,
+            ),
+            config=self._build_graph_config(
+                thread_id,
+                trace_user_id=trace_user_id,
+                trace_tags=trace_tags,
+                trace_metadata=trace_metadata,
+            ),
+        )
+        return self.build_result(
+            answer=output["answer"],
+            documents=output.get("documents", []),
+        )
 
-  def close(self) -> None:
-      close = getattr(self.checkpointer, "close", None)
-      if close:
-          close()
+    async def stream_answer(
+        self,
+        user_input: str,
+        user_profile: RAGUserProfile,
+        thread_id: str | None = None,
+        exclude_expired: bool = True,
+        *,
+        trace_user_id: str | None = None,
+        trace_tags: Sequence[str] | None = None,
+        trace_metadata: dict | None = None,
+    ) -> AsyncIterator[str]:
+        graph_input = self.build_graph_input(
+            user_input=user_input,
+            user_profile=user_profile,
+            exclude_expired=exclude_expired,
+        )
+        config = self._build_graph_config(
+            thread_id,
+            trace_user_id=trace_user_id,
+            trace_tags=trace_tags,
+            trace_metadata=trace_metadata,
+        )
+        previous_snapshot = await self.graph.aget_state(config)
+        latest_documents = list(
+            previous_snapshot.values.get("documents", [])
+        )
+        latest_retrieval_count = 0
+        metadata_sent = False
+        streamed_answer = ""
+
+        async for part in self.graph.astream(
+            graph_input,
+            config=config,
+            stream_mode=["updates", "messages"],
+            version="v2",
+        ):
+            if part["type"] == "updates":
+                update = part["data"]
+                planner_update = update.get("retrieval_planner")
+                if planner_update:
+                    if planner_update.get("needs_retrieval"):
+                        latest_documents = []
+                    elif not metadata_sent:
+                        latest_documents = list(
+                            planner_update.get(
+                                "documents",
+                                latest_documents,
+                            )
+                        )
+                        yield self._metadata_event(latest_documents)
+                        metadata_sent = True
+
+                retriever_update = update.get("retriever")
+                if retriever_update:
+                    latest_retrieval_count = retriever_update.get(
+                        "retrieval_count",
+                        latest_retrieval_count,
+                    )
+
+                selector_update = update.get("policy_selector")
+                if selector_update:
+                    latest_documents = list(
+                        selector_update.get("documents", [])
+                    )
+                    final_attempt = (
+                        latest_retrieval_count
+                        >= self.max_retrieval_retries + 1
+                    )
+                    if (
+                        not metadata_sent
+                        and (latest_documents or final_attempt)
+                    ):
+                        yield self._metadata_event(latest_documents)
+                        metadata_sent = True
+
+                generator_update = update.get("answer_generator")
+                if generator_update and not streamed_answer:
+                    if not metadata_sent:
+                        yield self._metadata_event(latest_documents)
+                        metadata_sent = True
+                    answer = generator_update["answer"]
+                    streamed_answer = answer
+                    yield self._sse_event("chunk", answer)
+
+            if part["type"] == "messages":
+                message_chunk, metadata = part["data"]
+                if (
+                    metadata.get("langgraph_node") != "answer_generator"
+                    or metadata.get("ls_model_type") != "chat"
+                ):
+                    continue
+                chunk = message_chunk.text
+                if not chunk:
+                    continue
+                if not metadata_sent:
+                    yield self._metadata_event(latest_documents)
+                    metadata_sent = True
+                streamed_answer += chunk
+                yield self._sse_event("chunk", chunk)
+
+        if not metadata_sent:
+            yield self._metadata_event(latest_documents)
+        yield self._sse_event("done")
+
+    def _metadata_event(self, documents: Sequence[Document]) -> str:
+        result = self.build_result(answer="", documents=documents)
+        return self._sse_event(
+            "metadata",
+            {
+                "contexts": result.contexts,
+                "retrieved_policy_ids": result.retrieved_policy_ids,
+            },
+        )
+
+    @staticmethod
+    def _sse_event(event_type: str, data=None) -> str:
+        event = {"type": event_type}
+        if data is not None:
+            event["data"] = data
+        return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    def delete_conversation(self, thread_id: str) -> None:
+        self.checkpointer.delete_thread(thread_id)
+
+    def close(self) -> None:
+        close = getattr(self.checkpointer, "close", None)
+        if close:
+            close()

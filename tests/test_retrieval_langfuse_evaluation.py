@@ -12,7 +12,7 @@ from src.evaluation.retrieval import (
     build_retrieval_task,
     reciprocal_rank_fusion,
 )
-from src.rag.nodes.retriever import (
+from src.rag.retrievers import (
     EnsemblePolicyRetriever,
     RetrievalRequest,
 )

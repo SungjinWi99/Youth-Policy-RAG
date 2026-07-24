@@ -2,7 +2,7 @@ from langchain_core.documents import Document
 
 from src.evaluation.models import EvaluationCase
 from src.evaluation.retrieval import evaluate_retrieval
-from src.rag.nodes.retriever import DensePolicyRetriever
+from src.rag.retrievers import DensePolicyRetriever
 
 
 class FakeRunnableRetriever:

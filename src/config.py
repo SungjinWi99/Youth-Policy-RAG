@@ -51,12 +51,20 @@ class DatabaseConfig(BaseModel):
 class PlannerRuntimeConfig(BaseModel):
   history_window: int = Field(default=6, ge=0)
 
-class AgentRuntimeConfig(BaseModel):
+class PolicyCheckerRuntimeConfig(BaseModel):
+  max_retries: int = Field(default=3, ge=0, le=10)
+
+class AnswerGeneratorRuntimeConfig(BaseModel):
   history_window: int = Field(default=10, ge=0)
 
 class RAGRuntimeConfig(BaseModel):
   planner: PlannerRuntimeConfig = Field(default_factory=PlannerRuntimeConfig)
-  agent: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
+  policy_checker: PolicyCheckerRuntimeConfig = Field(
+    default_factory=PolicyCheckerRuntimeConfig
+  )
+  answer_generator: AnswerGeneratorRuntimeConfig = Field(
+    default_factory=AnswerGeneratorRuntimeConfig
+  )
 
 class ApplicationConfig(BaseModel):
   release: str = Field(min_length=1, max_length=200)

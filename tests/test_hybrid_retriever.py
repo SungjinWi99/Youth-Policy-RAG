@@ -1,12 +1,16 @@
 import asyncio
+from datetime import date
 
 from langchain_core.documents import Document
 
-from src.rag.nodes.retriever import (
+from src.rag.retrievers import (
     BM25DocumentIndex,
     BM25PolicyRetriever,
+    DensePolicyRetriever,
     EnsemblePolicyRetriever,
     RetrievalRequest,
+    add_policy_exclusion,
+    build_filter_from_profile,
     tokenize_korean_legacy,
     tokenize_korean_lexical,
 )
@@ -47,6 +51,27 @@ class FakeCollection:
                 "metadatas": [{"plcyNo": "POLICY"}],
             }
         return {"ids": ["POLICY"]}
+
+
+class FakeVectorRetriever:
+    def __init__(self, documents):
+        self.documents = documents
+
+    def invoke(self, query):
+        return list(self.documents)
+
+    async def ainvoke(self, query):
+        return list(self.documents)
+
+
+class FakeVectorStore:
+    def __init__(self, documents):
+        self.documents = documents
+        self.search_kwargs = []
+
+    def as_retriever(self, *, search_kwargs):
+        self.search_kwargs.append(search_kwargs)
+        return FakeVectorRetriever(self.documents)
 
 
 def test_legacy_korean_lexical_tokenizer_adds_character_bigrams():
@@ -117,6 +142,95 @@ def test_bm25_retriever_omits_where_when_filter_is_empty():
         "POLICY",
     ]
     assert collection.calls[-1] == {"include": []}
+
+
+def test_income_is_not_used_as_a_hard_retrieval_filter():
+    assert build_filter_from_profile(
+        {"income": 3200},
+        exclude_expired=False,
+        today=date(2026, 7, 24),
+    ) is None
+
+
+def test_income_does_not_change_other_hard_filters():
+    without_income = build_filter_from_profile(
+        {"age": 27, "region": "서울"},
+        exclude_expired=False,
+        today=date(2026, 7, 24),
+    )
+    with_income = build_filter_from_profile(
+        {"age": 27, "region": "서울", "income": 3200},
+        exclude_expired=False,
+        today=date(2026, 7, 24),
+    )
+
+    assert with_income == without_income
+
+
+def test_policy_exclusion_filter_is_added_without_profile_filters():
+    assert add_policy_exclusion(
+        None,
+        frozenset({"POLICY-B", "POLICY-A"}),
+    ) == {
+        "plcyNo": {
+            "$nin": ["POLICY-A", "POLICY-B"],
+        }
+    }
+
+
+def test_policy_exclusion_filter_preserves_existing_profile_filter():
+    profile_filter = {"agePolicy": {"$eq": "all"}}
+
+    assert add_policy_exclusion(
+        profile_filter,
+        frozenset({"POLICY"}),
+    ) == {
+        "$and": [
+            profile_filter,
+            {"plcyNo": {"$nin": ["POLICY"]}},
+        ]
+    }
+
+
+def test_dense_retriever_passes_policy_exclusion_to_vector_store():
+    vector_store = FakeVectorStore([
+        policy_document("OTHER", "다른 정책"),
+    ])
+    retriever = DensePolicyRetriever(
+        vector_store=vector_store,
+        search_k=3,
+        today_provider=lambda: date(2026, 7, 24),
+    )
+
+    retriever.retrieve(RetrievalRequest(
+        query="월세 지원",
+        user_profile={},
+        exclude_expired=False,
+        excluded_policy_ids=frozenset({"REJECTED"}),
+    ))
+
+    assert vector_store.search_kwargs == [{
+        "k": 3,
+        "filter": {
+            "plcyNo": {
+                "$nin": ["REJECTED"],
+            }
+        },
+    }]
+
+
+def test_bm25_retriever_excludes_rejected_policy_id():
+    collection = FakeCollection()
+    retriever = BM25PolicyRetriever(collection=collection, search_k=3)
+
+    documents = retriever.retrieve(RetrievalRequest(
+        query="월세 지원",
+        user_profile={},
+        exclude_expired=False,
+        excluded_policy_ids=frozenset({"POLICY"}),
+    ))
+
+    assert documents == []
 
 
 def test_ensemble_retriever_combines_dense_and_bm25_ranks():
@@ -213,6 +327,36 @@ def test_ensemble_async_api_uses_the_same_fusion():
     assert [document.metadata["plcyNo"] for document in results] == [
         "B", "A", "C",
     ]
+
+
+def test_ensemble_defensively_excludes_policy_from_all_sources():
+    documents = {
+        policy_id: policy_document(policy_id, policy_id)
+        for policy_id in ["A", "B", "C"]
+    }
+    retriever = EnsemblePolicyRetriever(
+        retrievers=[
+            FakeRetriever([documents["B"], documents["A"]]),
+            FakeRetriever([documents["B"], documents["C"]]),
+        ],
+        weights=[0.5, 0.5],
+        search_k=3,
+        rrf_k=1,
+    )
+    request = RetrievalRequest(
+        query="query",
+        user_profile={},
+        exclude_expired=False,
+        excluded_policy_ids=frozenset({"B"}),
+    )
+
+    results, source_results = retriever.retrieve_with_sources(request)
+
+    assert [
+        [document.metadata["plcyNo"] for document in source]
+        for source in source_results
+    ] == [["A"], ["C"]]
+    assert [document.metadata["plcyNo"] for document in results] == ["A", "C"]
 
 
 def test_ensemble_rejects_mismatched_retrievers_and_weights():

@@ -1,6 +1,6 @@
 from langchain_core.documents import Document
 
-from src.rag.utils.formatting import format_doc
+from src.rag.utils import format_doc
 
 
 def test_format_doc_formats_capacity_and_first_come_metadata():

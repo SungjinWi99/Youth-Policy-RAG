@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import src.factory as factory
 from src.config import load_config
 from src.factory import create_chat_model
-from src.rag.nodes.retriever import EnsemblePolicyRetriever
+from src.rag.retrievers import EnsemblePolicyRetriever
 
 
 @pytest.fixture(autouse=True)
@@ -60,8 +60,37 @@ def test_build_rag_graph_constructs_configured_ensemble(monkeypatch):
         ),
     )
     monkeypatch.setattr(factory, "create_chat_model", lambda **kwargs: object())
-    monkeypatch.setattr(factory, "PolicyAgent", lambda llm: object())
-    monkeypatch.setattr(factory, "TurnPlanner", lambda llm: object())
+    monkeypatch.setattr(
+        factory,
+        "make_retrieval_planner_node",
+        lambda llm, history_window: SimpleNamespace(
+            llm=llm,
+            history_window=history_window,
+        ),
+    )
+    monkeypatch.setattr(
+        factory,
+        "make_retriever_node",
+        lambda retriever: retriever,
+    )
+    monkeypatch.setattr(
+        factory,
+        "make_policy_checker_node",
+        lambda llm: SimpleNamespace(llm=llm),
+    )
+    monkeypatch.setattr(
+        factory,
+        "make_policy_selector_node",
+        lambda: SimpleNamespace(mode="verdict"),
+    )
+    monkeypatch.setattr(
+        factory,
+        "make_answer_generator_node",
+        lambda llm, history_window: SimpleNamespace(
+            llm=llm,
+            history_window=history_window,
+        ),
+    )
     monkeypatch.setattr(factory, "create_sqlite_checkpointer", lambda path: object())
     monkeypatch.setattr(
         factory,
@@ -69,7 +98,11 @@ def test_build_rag_graph_constructs_configured_ensemble(monkeypatch):
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
 
-    graph = factory.build_rag_graph(config)
+    trace_config_factory = lambda **kwargs: kwargs
+    graph = factory.build_rag_graph(
+        config,
+        trace_config_factory=trace_config_factory,
+    )
 
     assert isinstance(graph.retriever, EnsemblePolicyRetriever)
     assert graph.retriever.weights == [0.65, 0.35]
@@ -78,3 +111,8 @@ def test_build_rag_graph_constructs_configured_ensemble(monkeypatch):
     assert [
         retriever.search_k for retriever in graph.retriever.retrievers
     ] == [10, 50]
+    assert graph.policy_selector.mode == "verdict"
+    assert graph.max_retrieval_retries == 3
+    assert graph.retrieval_planner.history_window == 6
+    assert graph.answer_generator.history_window == 10
+    assert graph.trace_config_factory is trace_config_factory

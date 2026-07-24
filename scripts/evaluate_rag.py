@@ -10,7 +10,7 @@ from langfuse import get_client
 from tqdm import tqdm
 
 from src.config import load_config
-from src.observability import initialize_langfuse, shutdown_langfuse
+from src.observability import create_observability_runtime
 from src.evaluation.langfuse import (
     is_not_found_error,
     item_value,
@@ -233,32 +233,36 @@ def main():
         os.environ.setdefault("LANGFUSE_TRACING", "true")
 
     config = load_config()
-    langfuse = initialize_langfuse(config) or get_client()
-    dataset = ensure_dataset(
-        langfuse,
-        config.evaluation.dataset_name,
-        config.path(config.evaluation.example_path),
-    )
-    rag = build_rag_graph(config)
-    evaluator_llm = build_evaluator_llm(config)
-    evaluators = build_langfuse_evaluators(evaluator_llm)
-    evaluation_items = load_evaluation_items(
-        config.path(config.evaluation.example_path)
-    )
-    progress = EvaluationProgress(
-        total_cases=len(evaluation_items),
-        evaluator_count=len(evaluators),
-        case_id_by_question={
-            item["input"]["question"]: item["case_id"]
-            for item in evaluation_items
-        },
-    )
-    experiment_name = (
-        f"{config.evaluation.experiment_prefix}-"
-        f"{config.evaluation.dataset_name}"
-    )
-
+    observability = create_observability_runtime(config)
+    rag = None
     try:
+        langfuse = observability.client or get_client()
+        dataset = ensure_dataset(
+            langfuse,
+            config.evaluation.dataset_name,
+            config.path(config.evaluation.example_path),
+        )
+        rag = build_rag_graph(
+            config,
+            trace_config_factory=observability.build_trace_config,
+        )
+        evaluator_llm = build_evaluator_llm(config)
+        evaluators = build_langfuse_evaluators(evaluator_llm)
+        evaluation_items = load_evaluation_items(
+            config.path(config.evaluation.example_path)
+        )
+        progress = EvaluationProgress(
+            total_cases=len(evaluation_items),
+            evaluator_count=len(evaluators),
+            case_id_by_question={
+                item["input"]["question"]: item["case_id"]
+                for item in evaluation_items
+            },
+        )
+        experiment_name = (
+            f"{config.evaluation.experiment_prefix}-"
+            f"{config.evaluation.dataset_name}"
+        )
         progress.log(
             f"Starting Langfuse experiment {experiment_name!r} "
             f"({len(evaluation_items)} cases, "
@@ -295,8 +299,9 @@ def main():
         print(results.format())
         print(f"Langfuse UI: {get_langfuse_ui_url()}")
     finally:
-        rag.close()
-        shutdown_langfuse()
+        if rag is not None:
+            rag.close()
+        observability.shutdown()
 
 
 if __name__ == "__main__":

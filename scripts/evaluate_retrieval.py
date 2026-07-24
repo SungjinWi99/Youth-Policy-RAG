@@ -50,7 +50,7 @@ from src.evaluation.retrieval import (
     evaluate_retrieval,
     safe_experiment_name,
 )
-from src.observability import initialize_langfuse, shutdown_langfuse
+from src.observability import create_observability_runtime
 from src.rag.reranker import LlamaCppReranker
 
 
@@ -296,12 +296,13 @@ def run_langfuse(args: argparse.Namespace) -> None:
         else None
     )
     config = load_config()
-    langfuse = initialize_langfuse(config)
-    if langfuse is None:
-        from langfuse import get_client
-
-        langfuse = get_client()
+    observability = create_observability_runtime(config)
     try:
+        langfuse = observability.client
+        if langfuse is None:
+            from langfuse import get_client
+
+            langfuse = get_client()
         dataset = ensure_retrieval_dataset(
             langfuse,
             dataset_name=args.langfuse_dataset_name,
@@ -387,7 +388,7 @@ def run_langfuse(args: argparse.Namespace) -> None:
                     }, ensure_ascii=False) + "\n")
             print(f"Local details: {output_details}")
     finally:
-        shutdown_langfuse()
+        observability.shutdown()
 
 
 def run_sweep(args: argparse.Namespace) -> None:

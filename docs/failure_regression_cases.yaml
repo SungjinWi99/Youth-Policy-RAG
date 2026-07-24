@@ -1,0 +1,118 @@
+schema_version: 1
+suite_id: answer-failure-regression
+description: >
+  2026-07-24 답변 생성 점검에서 FAIL로 분류된 사례를 현재 그래프에서
+  반복 검증하기 위한 회귀 시나리오 모음.
+
+cases:
+  - case_id: AG-04
+    title: 경기 대학생 학자금대출 이자 지원 검색 누락
+    historical_failure:
+      layer: retrieval
+      summary: >
+        최대 재검색까지 수행했지만 경기 대학생 학자금대출 이자 지원 정책을
+        찾지 못했다.
+    profile:
+      age: 22
+      gender: 남성
+      job: 대학생
+      income: 1200
+      region: 경기
+    exclude_expired: true
+    turns:
+      - turn: 1
+        question: >
+          경기도 대학생이 받을 수 있는 학자금대출 이자 지원이 있는지,
+          신청 방법까지 알려줘.
+        automated_checks:
+          max_retrieval_count: 4
+          no_duplicate_policy_ids: true
+          no_duplicate_policy_titles: true
+        review_criteria:
+          - 학자금대출 이자 지원과 장기연체 신용회복 정책을 구분한다.
+          - 적합 정책을 찾지 못했다면 존재하지 않는 정책이나 신청 방법을 만들지 않는다.
+          - 정책 미발견을 정책 자체가 존재하지 않는다는 사실로 단정하지 않는다.
+
+  - case_id: AG-05
+    title: 인천 재직자 자산형성 정책의 소득 자격 과단정
+    historical_failure:
+      layer: generation
+      summary: >
+        income 값의 단위, 개인·가구 기준, 가구원 수가 없는데도 중위소득
+        조건 충족과 신청 가능 여부를 확정했다.
+    profile:
+      age: 29
+      gender: 여성
+      job: 재직자
+      income: 3200
+      region: 인천
+    turns:
+      - turn: 1
+        question: >
+          인천에서 일하고 있는 29살인데 목돈을 만들 수 있는 청년 적금이나
+          자산형성 지원을 찾고 있어.
+        automated_checks:
+          max_retrieval_count: 4
+          no_duplicate_policy_ids: true
+          no_duplicate_policy_titles: true
+        review_criteria:
+          - income 3200의 단위나 개인·가구소득 기준을 임의로 가정하지 않는다.
+          - 중위소득 또는 소득 자격 충족을 확정하지 않고 추가 확인 항목을 설명한다.
+          - 검색 결과 포함과 실제 신청 자격 충족을 구분한다.
+
+  - case_id: AG-09
+    title: 지역 미공개 교통비 질문의 의미 중복과 지역 과단정
+    historical_failure:
+      layer: selection_and_generation
+      summary: >
+        정책번호가 다른 동일 정책이 중복 선택됐고, 거주 지역을 모르는
+        사용자에게 특정 지역 정책 중심으로 답했다.
+    profile: {}
+    turns:
+      - turn: 1
+        question: >
+          지역이나 소득은 말하고 싶지 않아. 청년이 받을 수 있는
+          대중교통비 지원에는 뭐가 있어?
+        automated_checks:
+          max_retrieval_count: 4
+          no_duplicate_policy_ids: true
+          no_duplicate_policy_titles: true
+        review_criteria:
+          - 동일한 정책명의 문서를 여러 정책처럼 반복 제시하지 않는다.
+          - 지역 정책은 예시로 구분하고 사용자의 실제 자격을 확정하지 않는다.
+          - 지역을 공개하지 않겠다는 의사를 존중하면서 전국형과 지역형의 차이를 설명한다.
+
+  - case_id: AG-10
+    title: 서울 주거정책 소득 과단정과 후속 질문 재검색
+    historical_failure:
+      layer: planner_checker_generation
+      summary: >
+        첫 답변에서 소득 자격을 확정했고, 신청 방법·서류를 묻는 후속
+        질문에서 기존 적합 정책을 재사용하지 않고 다시 검색했다.
+    profile:
+      age: 28
+      gender: 남성
+      job: 재직자
+      income: 2800
+      region: 서울
+    turns:
+      - turn: 1
+        question: 서울에서 받을 수 있는 청년 주거비 지원을 찾아줘.
+        automated_checks:
+          max_retrieval_count: 4
+          no_duplicate_policy_ids: true
+          no_duplicate_policy_titles: true
+        review_criteria:
+          - income 2800만으로 가구소득 또는 중위소득 기준 충족을 확정하지 않는다.
+          - 정책 목적 적합성과 실제 신청 자격 충족을 구분한다.
+      - turn: 2
+        question: 방금 말한 정책들의 신청 방법과 필요한 서류만 서로 비교해줘.
+        automated_checks:
+          expected_retrieval_count: 0
+          preserve_previous_policy_ids: true
+          no_duplicate_policy_ids: true
+          no_duplicate_policy_titles: true
+        review_criteria:
+          - 상세정보 부족만을 이유로 다른 정책을 재검색하지 않는다.
+          - 직전 턴의 정책들을 유지한 상태에서 신청 방법과 서류를 비교한다.
+          - 문서에 없는 내용은 미제공이라고 밝히고 공식 확인 경로를 안내한다.
