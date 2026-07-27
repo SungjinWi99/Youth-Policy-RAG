@@ -72,8 +72,6 @@ def create_embedding_model(provider: str, model_name: str, **kwargs):
 
 def build_rag_graph(
     config: AppConfig,
-    *,
-    trace_config_factory=None,
 ) -> PolicyRagGraph:
     embeddings = create_embedding_model(
         provider=config.retriever.provider,
@@ -130,5 +128,4 @@ def build_rag_graph(
         ),
         checkpointer=checkpointer,
         max_retrieval_retries=config.rag.policy_checker.max_retries,
-        trace_config_factory=trace_config_factory,
     )

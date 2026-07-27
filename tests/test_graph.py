@@ -158,7 +158,6 @@ def build_graph(
     documents_by_query=None,
     verdicts=None,
     max_retries=3,
-    trace_config_factory=None,
     retriever_search_k=3,
     force_search_inputs=None,
 ):
@@ -184,7 +183,6 @@ def build_graph(
         answer_generator=answer_generator.runnable(),
         checkpointer=InMemorySaver(),
         max_retrieval_retries=max_retries,
-        trace_config_factory=trace_config_factory,
     )
     return graph, planner, policy_retriever, checker, answer_generator
 
@@ -398,8 +396,16 @@ def test_failed_new_search_preserves_active_policy_for_later_follow_up():
         document.metadata["plcyNo"]
         for document in answer_generator.calls[2]["documents"]
     ] == ["ACTIVE"]
-    assert follow_up_events[0]["type"] == "metadata"
-    assert follow_up_events[0]["data"]["retrieved_policy_ids"] == ["ACTIVE"]
+    assert follow_up_events[0]["data"] == {
+        "stage": "planning",
+        "message": "질문을 분석하고 있습니다.",
+    }
+    assert follow_up_events[1]["data"] == {
+        "stage": "generating",
+        "message": "답변을 생성하고 있습니다.",
+    }
+    assert follow_up_events[2]["type"] == "metadata"
+    assert follow_up_events[2]["data"]["retrieved_policy_ids"] == ["ACTIVE"]
 
 
 def test_rejected_policy_exclusion_resets_on_next_user_turn():
@@ -463,44 +469,24 @@ def test_follow_up_reuses_accepted_documents_and_chat_history():
     ]
 
 
-def test_graph_config_skips_langfuse_when_disabled(monkeypatch):
-    monkeypatch.delenv("OBSERVABILITY_PROVIDER", raising=False)
-    monkeypatch.delenv("LANGFUSE_TRACING", raising=False)
+def test_graph_config_omits_metadata_when_not_provided():
     graph, *_ = build_graph()
 
-    assert graph._build_graph_config(
-        "thread-1",
-        trace_user_id="user-1",
-    ) == {"configurable": {"thread_id": "thread-1"}}
+    assert graph._build_graph_config("thread-1") == {
+        "configurable": {"thread_id": "thread-1"}
+    }
 
 
-def test_graph_config_adds_langfuse_callback_metadata(monkeypatch):
-    class FakeCallbackHandler:
-        pass
-
-    def trace_config_factory(**kwargs):
-        return {
-            "callbacks": [FakeCallbackHandler()],
-            "tags": kwargs["tags"],
-            "metadata": {
-                "langfuse_user_id": kwargs["user_id"],
-                **kwargs["metadata"],
-            },
-        }
-
-    graph, *_ = build_graph(trace_config_factory=trace_config_factory)
+def test_graph_config_adds_trace_metadata():
+    graph, *_ = build_graph()
 
     config = graph._build_graph_config(
         "thread-1",
-        trace_user_id="user-1",
         trace_id="a" * 32,
-        trace_tags=["rag-test"],
         trace_metadata={"case_id": "case-1"},
     )
 
-    assert isinstance(config["callbacks"][0], FakeCallbackHandler)
-    assert config["tags"] == ["rag-test"]
-    assert config["metadata"]["langfuse_user_id"] == "user-1"
+    assert config["metadata"]["langgraph_thread_id"] == "thread-1"
     assert config["metadata"]["case_id"] == "case-1"
 
 
@@ -525,13 +511,38 @@ def test_stream_answer_exposes_only_checker_accepted_policies():
     events = asyncio.run(collect_events())
 
     assert [event["type"] for event in events] == [
+        "status",
+        "status",
+        "status",
+        "status",
         "metadata",
         "chunk",
         "done",
     ]
-    assert events[0]["data"]["retrieved_policy_ids"] == ["HIGH"]
-    assert events[0]["data"]["trace_id"] == "a" * 32
-    assert events[1]["data"] == "답변: 지원 정책"
+    assert [
+        event["data"]
+        for event in events[:4]
+    ] == [
+        {
+            "stage": "planning",
+            "message": "질문을 분석하고 있습니다.",
+        },
+        {
+            "stage": "search",
+            "message": "관련 정책을 검색하고 있습니다.",
+        },
+        {
+            "stage": "validating",
+            "message": "정책이 사용자에게 적합한지 확인하고 있습니다.",
+        },
+        {
+            "stage": "generating",
+            "message": "답변을 생성하고 있습니다.",
+        },
+    ]
+    assert events[4]["data"]["retrieved_policy_ids"] == ["HIGH"]
+    assert events[4]["data"]["trace_id"] == "a" * 32
+    assert events[5]["data"] == "답변: 지원 정책"
 
 
 def test_delete_conversation_removes_persisted_documents():

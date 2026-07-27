@@ -98,11 +98,7 @@ def test_build_rag_graph_constructs_configured_ensemble(monkeypatch):
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
 
-    trace_config_factory = lambda **kwargs: kwargs
-    graph = factory.build_rag_graph(
-        config,
-        trace_config_factory=trace_config_factory,
-    )
+    graph = factory.build_rag_graph(config)
 
     assert isinstance(graph.retriever, EnsemblePolicyRetriever)
     assert graph.retriever.weights == [0.65, 0.35]
@@ -115,4 +111,3 @@ def test_build_rag_graph_constructs_configured_ensemble(monkeypatch):
     assert graph.max_retrieval_retries == 3
     assert graph.retrieval_planner.history_window == 6
     assert graph.answer_generator.history_window == 10
-    assert graph.trace_config_factory is trace_config_factory

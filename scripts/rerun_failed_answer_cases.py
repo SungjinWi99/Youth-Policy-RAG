@@ -22,7 +22,6 @@ load_dotenv()
 
 from src.config import load_config
 from src.factory import build_rag_graph
-from src.observability import create_observability_runtime
 from src.rag.state import (
     CHECKER_REASONING_METADATA_KEY,
     CHECKER_VERDICT_METADATA_KEY,
@@ -34,13 +33,6 @@ DEFAULT_CASES_PATH = (
     PROJECT_ROOT / "docs/failure_regression_cases.yaml"
 )
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data/eval/failure_regression_runs"
-TRACE_TAGS = [
-    "youth-policy-rag",
-    "qualitative-eval",
-    "answer-failure-regression",
-]
-
-
 class AutomatedChecks(BaseModel):
     expected_retrieval_count: int | None = Field(default=None, ge=0)
     min_retrieval_count: int | None = Field(default=None, ge=0)
@@ -294,13 +286,9 @@ async def run_suite(
     if results is None:
         results = []
     config = load_config()
-    observability = create_observability_runtime(config)
     graph = None
     try:
-        graph = build_rag_graph(
-            config,
-            trace_config_factory=observability.build_trace_config,
-        )
+        graph = build_rag_graph(config)
         for case in cases:
             exclude_expired = (
                 case.exclude_expired
@@ -317,10 +305,6 @@ async def run_suite(
                     user_profile=case.profile,
                     thread_id=thread_id,
                     exclude_expired=exclude_expired,
-                    trace_user_id=(
-                        f"failure-regression-{case.case_id.lower()}"
-                    ),
-                    trace_tags=TRACE_TAGS,
                     trace_metadata={
                         "evaluation_case_id": case.case_id,
                         "evaluation_turn": turn.turn,
@@ -380,7 +364,6 @@ async def run_suite(
     finally:
         if graph is not None:
             graph.close()
-        observability.shutdown()
     return results
 
 

@@ -1,6 +1,6 @@
 import json
 from collections.abc import AsyncIterator, Sequence
-from typing import Callable, Literal
+from typing import Literal
 from uuid import uuid4
 
 from langchain_core.documents import Document
@@ -31,7 +31,6 @@ class PolicyRagGraph:
         answer_generator: Runnable,
         checkpointer: AsyncCompatibleSqliteSaver,
         max_retrieval_retries: int = 3,
-        trace_config_factory: Callable[..., dict] | None = None,
     ):
         if max_retrieval_retries < 0:
             raise ValueError("max_retrieval_retries는 0 이상이어야 합니다.")
@@ -42,7 +41,6 @@ class PolicyRagGraph:
         self.answer_generator = answer_generator
         self.checkpointer = checkpointer
         self.max_retrieval_retries = max_retrieval_retries
-        self.trace_config_factory = trace_config_factory
         self.graph = self._compile_graph()
 
     def _compile_graph(self):
@@ -132,34 +130,16 @@ class PolicyRagGraph:
         self,
         thread_id: str | None,
         *,
-        trace_user_id: str | None = None,
         trace_id: str | None = None,
-        trace_tags: Sequence[str] | None = None,
         trace_metadata: dict | None = None,
     ) -> dict:
         resolved_thread_id = thread_id or str(uuid4())
         config = {"configurable": {"thread_id": resolved_thread_id}}
-        trace_config = (
-            self.trace_config_factory(
-                user_id=trace_user_id,
-                session_id=resolved_thread_id,
-                trace_id=trace_id,
-                tags=trace_tags or ["youth-policy-rag"],
-                metadata={
-                    "langgraph_thread_id": resolved_thread_id,
-                    **(trace_metadata or {}),
-                },
-            )
-            if self.trace_config_factory
-            else {}
-        )
-        for key, value in trace_config.items():
-            if key == "metadata":
-                config.setdefault("metadata", {}).update(value)
-            elif key == "callbacks":
-                config.setdefault("callbacks", []).extend(value)
-            else:
-                config[key] = value
+        if trace_metadata:
+            config["metadata"] = {
+                "langgraph_thread_id": resolved_thread_id,
+                **trace_metadata,
+            }
         return config
 
     @staticmethod
@@ -205,9 +185,7 @@ class PolicyRagGraph:
         thread_id: str | None = None,
         exclude_expired: bool = True,
         *,
-        trace_user_id: str | None = None,
         trace_id: str | None = None,
-        trace_tags: Sequence[str] | None = None,
         trace_metadata: dict | None = None,
     ) -> RAGResult:
         output = self.graph.invoke(
@@ -218,9 +196,7 @@ class PolicyRagGraph:
             ),
             config=self._build_graph_config(
                 thread_id,
-                trace_user_id=trace_user_id,
                 trace_id=trace_id,
-                trace_tags=trace_tags,
                 trace_metadata=trace_metadata,
             ),
         )
@@ -236,9 +212,7 @@ class PolicyRagGraph:
         thread_id: str | None = None,
         exclude_expired: bool = True,
         *,
-        trace_user_id: str | None = None,
         trace_id: str | None = None,
-        trace_tags: Sequence[str] | None = None,
         trace_metadata: dict | None = None,
     ) -> RAGResult:
         output = await self.graph.ainvoke(
@@ -249,9 +223,7 @@ class PolicyRagGraph:
             ),
             config=self._build_graph_config(
                 thread_id,
-                trace_user_id=trace_user_id,
                 trace_id=trace_id,
-                trace_tags=trace_tags,
                 trace_metadata=trace_metadata,
             ),
         )
@@ -267,9 +239,7 @@ class PolicyRagGraph:
         thread_id: str | None = None,
         exclude_expired: bool = True,
         *,
-        trace_user_id: str | None = None,
         trace_id: str | None = None,
-        trace_tags: Sequence[str] | None = None,
         trace_metadata: dict | None = None,
     ) -> AsyncIterator[str]:
         graph_input = self.build_graph_input(
@@ -279,9 +249,7 @@ class PolicyRagGraph:
         )
         config = self._build_graph_config(
             thread_id,
-            trace_user_id=trace_user_id,
             trace_id=trace_id,
-            trace_tags=trace_tags,
             trace_metadata=trace_metadata,
         )
         previous_snapshot = await self.graph.aget_state(config)
@@ -291,6 +259,11 @@ class PolicyRagGraph:
         latest_retrieval_count = 0
         metadata_sent = False
         streamed_answer = ""
+
+        yield self._status_event(
+            "planning",
+            "질문을 분석하고 있습니다.",
+        )
 
         async for part in self.graph.astream(
             graph_input,
@@ -304,7 +277,17 @@ class PolicyRagGraph:
                 if planner_update:
                     if planner_update.get("needs_retrieval"):
                         latest_documents = []
+                        status_message = (
+                            "관련 정책을 검색하고 있습니다."
+                            if latest_retrieval_count == 0
+                            else "조건에 맞는 정책을 다시 검색하고 있습니다."
+                        )
+                        yield self._status_event("search", status_message)
                     elif not metadata_sent:
+                        yield self._status_event(
+                            "generating",
+                            "답변을 생성하고 있습니다.",
+                        )
                         latest_documents = list(
                             planner_update.get(
                                 "documents",
@@ -323,6 +306,10 @@ class PolicyRagGraph:
                         "retrieval_count",
                         latest_retrieval_count,
                     )
+                    yield self._status_event(
+                        "validating",
+                        "정책이 사용자에게 적합한지 확인하고 있습니다.",
+                    )
 
                 selector_update = update.get("policy_selector")
                 if selector_update:
@@ -337,11 +324,25 @@ class PolicyRagGraph:
                         not metadata_sent
                         and (latest_documents or final_attempt)
                     ):
+                        yield self._status_event(
+                            "generating",
+                            "답변을 생성하고 있습니다.",
+                        )
                         yield self._metadata_event(
                             latest_documents,
                             trace_id=trace_id,
                         )
                         metadata_sent = True
+                    elif latest_documents or final_attempt:
+                        yield self._status_event(
+                            "generating",
+                            "답변을 생성하고 있습니다.",
+                        )
+                    else:
+                        yield self._status_event(
+                            "retrying",
+                            "추가로 관련 정책을 찾고 있습니다.",
+                        )
 
                 generator_update = update.get("answer_generator")
                 if generator_update and not streamed_answer:
@@ -430,6 +431,16 @@ class PolicyRagGraph:
         return self._sse_event(
             "metadata",
             data,
+        )
+
+    @classmethod
+    def _status_event(cls, stage: str, message: str) -> str:
+        return cls._sse_event(
+            "status",
+            {
+                "stage": stage,
+                "message": message,
+            },
         )
 
     @staticmethod

@@ -10,7 +10,7 @@ from src.user.router import user_router
 from src.config import load_config
 from src.database import create_db_and_tables
 from src.factory import build_rag_graph
-from src.observability import create_observability_runtime
+from src.langfeather_runtime import create_langfeather_runtime
 from src.session.cleanup import run_expired_session_cleanup
 
 load_dotenv()
@@ -18,17 +18,15 @@ config = load_config()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    observability = create_observability_runtime(config)
+    langfeather_runtime = create_langfeather_runtime()
     rag_graph = None
     cleanup_task = None
     try:
         create_db_and_tables()
-        rag_graph = build_rag_graph(
-            config,
-            trace_config_factory=observability.build_trace_config,
-        )
+        rag_graph = build_rag_graph(config)
+        rag_graph.graph = langfeather_runtime.wrap_graph(rag_graph.graph)
         app.state.rag_graph = rag_graph
-        app.state.observability = observability
+        app.state.langfeather_runtime = langfeather_runtime
         cleanup_task = asyncio.create_task(
             run_expired_session_cleanup(rag_graph)
         )
@@ -40,7 +38,7 @@ async def lifespan(app: FastAPI):
                 await cleanup_task
         if rag_graph is not None:
             rag_graph.close()
-        observability.shutdown()
+        langfeather_runtime.shutdown()
 
 app = FastAPI(title="청년정책 RAG API", lifespan=lifespan)
 app.include_router(chat_router)

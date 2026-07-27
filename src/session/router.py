@@ -3,8 +3,12 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
 from src.chat.models import ConversationThread
-from src.dependencies import get_db, get_observability, get_rag_graph
-from src.observability import ObservabilityRuntime
+from src.dependencies import (
+    get_db,
+    get_langfeather_runtime,
+    get_rag_graph,
+)
+from src.langfeather_runtime import LangFeatherRuntime
 from src.rag.graph import PolicyRagGraph
 from src.session.models import AnonymousSession
 from src.session.schemas import (
@@ -137,7 +141,7 @@ async def stream_session_answer(
     session: AnonymousSession = Depends(get_current_session),
     db: Session = Depends(get_db),
     rag: PolicyRagGraph = Depends(get_rag_graph),
-    observability: ObservabilityRuntime = Depends(get_observability),
+    langfeather_runtime: LangFeatherRuntime = Depends(get_langfeather_runtime),
 ) -> StreamingResponse:
     try:
         profile = UserProfile.get(session.user_id, db)
@@ -145,14 +149,14 @@ async def stream_session_answer(
             include={"age", "gender", "job", "income", "region"}
         )
         thread_id = ConversationThread.get_thread_id(session.user_id, db)
-        trace_id = observability.create_trace_id()
+        trace_id = langfeather_runtime.create_trace_id()
         generator = rag.stream_answer(
             user_profile=rag_user_profile,
             user_input=payload.user_input,
             exclude_expired=payload.exclude_expired,
             thread_id=thread_id,
-            trace_user_id=session.user_id,
             trace_id=trace_id,
+            trace_metadata=langfeather_runtime.trace_metadata(trace_id),
         )
         return StreamingResponse(
             generator,
@@ -176,24 +180,28 @@ async def stream_session_answer(
 def submit_user_feedback(
     payload: UserFeedbackRequest,
     session: AnonymousSession = Depends(get_current_session),
-    observability: ObservabilityRuntime = Depends(get_observability),
+    langfeather_runtime: LangFeatherRuntime = Depends(get_langfeather_runtime),
 ) -> dict[str, str]:
-    try:
-        observability.record_user_feedback(
-            trace_id=payload.trace_id,
-            helpful=payload.helpful,
-            reason=payload.reason,
-            comment=payload.comment,
-            anonymous_user_id=session.user_id,
-        )
-    except RuntimeError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except Exception as error:
-        print(error)
-        raise HTTPException(
-            status_code=502,
-            detail="피드백 저장소에 연결할 수 없습니다.",
-        ) from error
+    recorded = False
+    errors: list[RuntimeError] = []
+    if langfeather_runtime.enabled:
+        try:
+            langfeather_runtime.record_user_feedback(
+                trace_id=payload.trace_id,
+                helpful=payload.helpful,
+                reason=payload.reason,
+                comment=payload.comment,
+                anonymous_user_id=session.user_id,
+            )
+            recorded = True
+        except RuntimeError as error:
+            errors.append(error)
+        except Exception as error:
+            print(error)
+            errors.append(RuntimeError("피드백 저장소에 연결할 수 없습니다."))
+    if not recorded:
+        message = str(errors[-1]) if errors else "피드백 수집이 비활성화되어 있습니다."
+        raise HTTPException(status_code=503, detail=message)
     return {"message": "피드백이 저장되었습니다."}
 
 
