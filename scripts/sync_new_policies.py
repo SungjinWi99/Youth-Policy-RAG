@@ -202,7 +202,6 @@ def resolve_project_path(path: Path) -> Path:
 def main() -> None:
     args = parse_args()
     load_dotenv()
-    os.environ["LANGFUSE_TRACING"] = "false"
     api_key = str(os.getenv("YOUTH_API_KEY") or "").strip()
     if not api_key:
         raise SystemExit(".env에 YOUTH_API_KEY를 설정해주세요.")

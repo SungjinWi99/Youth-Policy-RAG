@@ -614,11 +614,6 @@ def parse_args() -> argparse.Namespace:
         help="PROVIDER/MODEL=WEIGHT 형식. 여러 번 지정 가능",
     )
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument(
-        "--enable-tracing",
-        action="store_true",
-        help="질문 생성 LLM 호출을 Langfuse에 trace합니다.",
-    )
     args = parser.parse_args()
     try:
         args.detail_distribution = parse_distribution(
@@ -639,9 +634,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     load_dotenv()
-    if not args.enable_tracing:
-        os.environ["LANGFUSE_TRACING"] = "false"
-
     config = load_config()
     models = resolve_generation_models(config, args.generation_model)
     policies = sample_policies(

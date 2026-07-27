@@ -40,21 +40,6 @@ class FakeRagGraph:
         self.deleted_thread_ids.append(thread_id)
 
 
-class FakeObservability:
-    def __init__(self):
-        self.feedback_calls = []
-
-    @property
-    def enabled(self):
-        return True
-
-    def create_trace_id(self):
-        return "a" * 32
-
-    def record_user_feedback(self, **kwargs):
-        self.feedback_calls.append(kwargs)
-
-
 class FakeLangFeatherRuntime:
     def __init__(self):
         self.feedback_calls = []
@@ -81,13 +66,10 @@ def build_client():
     )
     SQLModel.metadata.create_all(engine)
     rag = FakeRagGraph()
-    observability = FakeObservability()
     langfeather_runtime = FakeLangFeatherRuntime()
-    rag.observability = observability
     rag.langfeather_runtime = langfeather_runtime
     app = FastAPI()
     app.state.rag_graph = rag
-    app.state.observability = observability
     app.state.langfeather_runtime = langfeather_runtime
     app.include_router(session_router)
 
@@ -167,10 +149,9 @@ def test_session_chat_uses_internal_user_and_returns_sse():
     assert call["user_input"] == "월세 지원을 알려줘."
     assert call["user_profile"]["region"] == "서울"
     assert call["thread_id"].startswith("anon_")
-    assert call["trace_user_id"] == call["thread_id"]
-    assert call["trace_id"] == "a" * 32
-    assert call["trace_metadata"] == {"langfeather_trace_id": "a" * 32}
-    assert events[0]["data"]["trace_id"] == "a" * 32
+    assert call["trace_id"] == "b" * 32
+    assert call["trace_metadata"] == {"langfeather_trace_id": "b" * 32}
+    assert events[0]["data"]["trace_id"] == "b" * 32
 
 
 def test_session_feedback_is_recorded_against_trace():
@@ -189,11 +170,6 @@ def test_session_feedback_is_recorded_against_trace():
 
     assert response.status_code == 200
     assert response.json() == {"message": "피드백이 저장되었습니다."}
-    feedback = rag.observability.feedback_calls[0]
-    assert feedback["trace_id"] == "a" * 32
-    assert feedback["helpful"] is False
-    assert feedback["reason"] == "missing-details"
-    assert feedback["anonymous_user_id"].startswith("anon_")
     assert rag.langfeather_runtime.feedback_calls[0]["trace_id"] == "a" * 32
     assert rag.langfeather_runtime.feedback_calls[0]["reason"] == "missing-details"
 

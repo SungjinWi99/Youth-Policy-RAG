@@ -15,7 +15,6 @@ from src.evaluation.metrics import (
     rank_gold_policy_ids,
     recall_at_k,
 )
-from src.evaluation.langfuse import item_value
 from src.evaluation.models import EvaluationCase, PlannerQueryRecord
 from src.factory import create_embedding_model
 from src.rag.retrievers import (
@@ -40,6 +39,10 @@ BM25_TOKENIZERS = {
     "kiwi": tokenize_korean_lexical,
     "legacy": tokenize_korean_legacy,
 }
+
+
+def item_value(item: Any, key: str, default=None):
+    return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
 
 
 def create_query_embedding_model(

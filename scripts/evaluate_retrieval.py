@@ -1,8 +1,7 @@
-"""Run retrieval benchmarks locally or in Langfuse, and sweep hybrid weights."""
+"""Run local retrieval benchmarks and sweep hybrid weights."""
 
 import argparse
 import json
-import os
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -27,16 +26,6 @@ from src.evaluation.hybrid_sweep import (
     evaluate_cached_hybrid_sweep,
     load_dense_details,
 )
-from src.evaluation.langfuse import (
-    build_mean_run_evaluator,
-    build_recall_evaluator,
-    ensure_retrieval_dataset,
-    item_value,
-    planner_raw_fallback_evaluator,
-    planner_needs_retrieval_evaluator,
-    reciprocal_rank_evaluator,
-    reranker_latency_evaluator,
-)
 from src.evaluation.retrieval import (
     DEFAULT_HYBRID_BM25_CANDIDATE_K,
     DEFAULT_HYBRID_DENSE_WEIGHT,
@@ -49,17 +38,13 @@ from src.evaluation.retrieval import (
     evaluate_retrieval,
     safe_experiment_name,
 )
-from src.observability import create_observability_runtime
-from src.rag.reranker import LlamaCppReranker
 
 
 DEFAULT_OUTPUT_DIR = project_path("data/eval/retrieval_results")
-DEFAULT_LANGFUSE_DATASET_NAME = "PolicyRetrievalEval_v1_200"
 DEFAULT_RERANKER_BASE_URL = "http://127.0.0.1:11435"
 
 
 def add_run_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--tracking", choices=("local", "langfuse"), default="local")
     parser.add_argument("--provider", choices=("ollama", "openai", "upstage"))
     parser.add_argument("--model", help="dense/hybrid query embedding 모델명")
     parser.add_argument("--chroma-dir", type=Path, required=True)
@@ -75,11 +60,8 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ollama-base-url", default=DEFAULT_OLLAMA_BASE_URL)
     parser.add_argument("--experiment-name")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--output-details", type=Path, help="Langfuse item 결과 JSONL")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--planner-query-cache", type=Path)
-    parser.add_argument("--langfuse-dataset-name", default=DEFAULT_LANGFUSE_DATASET_NAME)
-    parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument("--reranker-model")
     parser.add_argument("--reranker-base-url", default=DEFAULT_RERANKER_BASE_URL)
     parser.add_argument("--reranker-timeout-seconds", type=float, default=60.0)
@@ -134,20 +116,14 @@ def parse_args() -> argparse.Namespace:
             parser.error("dense/hybrid 모드에는 --provider와 --model이 필요합니다.")
         if args.limit is not None and args.limit < 1:
             parser.error("--limit은 1 이상이어야 합니다.")
-        if args.max_concurrency < 1:
-            parser.error("--max-concurrency는 1 이상이어야 합니다.")
         if args.hybrid_rrf_k < 1:
             parser.error("RRF k는 1 이상이어야 합니다.")
         if args.bm25_candidate_k < args.rank_depth:
             parser.error("--bm25-candidate-k는 --rank-depth 이상이어야 합니다.")
         if not 0 <= args.dense_weight <= 1:
             parser.error("--dense-weight는 0과 1 사이여야 합니다.")
-        if args.tracking == "local" and (args.planner_query_cache or args.reranker_model):
-            parser.error("Planner/reranker 실험은 --tracking langfuse에서 실행하세요.")
-        if args.tracking == "langfuse" and args.limit is not None:
-            parser.error("--limit은 local smoke test에서만 사용할 수 있습니다.")
-        if args.tracking == "langfuse" and not args.experiment_name:
-            parser.error("--tracking langfuse에는 --experiment-name이 필요합니다.")
+        if args.planner_query_cache or args.reranker_model:
+            parser.error("Planner/reranker 실험은 현재 local run에서 지원하지 않습니다.")
         if args.reranker_model and args.retrieval_mode != "dense":
             parser.error("reranker 실험은 dense 모드에서만 지원합니다.")
     else:
@@ -267,119 +243,6 @@ def run_local(args: argparse.Namespace) -> None:
     print(f"Details: {details_path}")
 
 
-def run_langfuse(args: argparse.Namespace) -> None:
-    if not os.getenv("LANGFUSE_PUBLIC_KEY") or not os.getenv("LANGFUSE_SECRET_KEY"):
-        raise RuntimeError("LANGFUSE_PUBLIC_KEY와 LANGFUSE_SECRET_KEY가 필요합니다.")
-    os.environ["LANGFUSE_TRACING"] = "true"
-    dataset_path, chroma_dir, cases, _, retriever, evaluation_today = prepare_run(args)
-    planner_records = (
-        load_planner_query_records(project_path(args.planner_query_cache), cases)
-        if args.planner_query_cache
-        else None
-    )
-    reranker = (
-        LlamaCppReranker(
-            base_url=args.reranker_base_url,
-            model=args.reranker_model,
-            timeout_seconds=args.reranker_timeout_seconds,
-        )
-        if args.reranker_model
-        else None
-    )
-    config = load_config()
-    observability = create_observability_runtime(config)
-    try:
-        langfuse = observability.client
-        if langfuse is None:
-            from langfuse import get_client
-
-            langfuse = get_client()
-        dataset = ensure_retrieval_dataset(
-            langfuse,
-            dataset_name=args.langfuse_dataset_name,
-            dataset_path=dataset_path,
-            cases=cases,
-        )
-        item_evaluators = [
-            build_recall_evaluator(3),
-            build_recall_evaluator(5),
-            build_recall_evaluator(10),
-            reciprocal_rank_evaluator,
-        ]
-        run_evaluators = [
-            build_mean_run_evaluator(item_metric_name="recall_at_3", run_metric_name="recall_at_3"),
-            build_mean_run_evaluator(item_metric_name="recall_at_5", run_metric_name="recall_at_5"),
-            build_mean_run_evaluator(item_metric_name="recall_at_10", run_metric_name="recall_at_10"),
-            build_mean_run_evaluator(item_metric_name="reciprocal_rank", run_metric_name="mrr"),
-        ]
-        if planner_records is not None:
-            item_evaluators.extend([planner_needs_retrieval_evaluator, planner_raw_fallback_evaluator])
-            run_evaluators.extend([
-                build_mean_run_evaluator(item_metric_name="planner_needs_retrieval", run_metric_name="planner_needs_retrieval_rate"),
-                build_mean_run_evaluator(item_metric_name="planner_raw_fallback", run_metric_name="planner_raw_fallback_rate"),
-            ])
-        if reranker is not None:
-            item_evaluators.append(reranker_latency_evaluator)
-            run_evaluators.append(build_mean_run_evaluator(
-                item_metric_name="reranker_latency_ms",
-                run_metric_name="mean_reranker_latency_ms",
-            ))
-        results = dataset.run_experiment(
-            name=args.experiment_name,
-            description="PolicyRetriever Recall@3/5/10 및 MRR deterministic 평가",
-            task=build_retrieval_task(
-                retriever,
-                planner_records,
-                reranker=reranker,
-            ),
-            evaluators=item_evaluators,
-            run_evaluators=run_evaluators,
-            max_concurrency=args.max_concurrency,
-            metadata={
-                "dataset_name": args.langfuse_dataset_name,
-                "dataset_path": str(dataset_path),
-                "retriever_class": type(retriever).__name__,
-                "retrieval_mode": args.retrieval_mode,
-                "retriever_provider": args.provider,
-                "retriever_query_model": args.model,
-                "chroma_dir": str(chroma_dir),
-                "collection": args.collection,
-                "rank_depth": args.rank_depth,
-                "bm25_candidate_k": args.bm25_candidate_k,
-                "bm25_tokenizer": args.bm25_tokenizer,
-                "dense_weight": args.dense_weight,
-                "hybrid_rrf_k": args.hybrid_rrf_k,
-                "reranker_model": args.reranker_model,
-                "today": evaluation_today.isoformat(),
-                "query_mode": "planner" if planner_records else "raw",
-                "planner_query_cache": str(project_path(args.planner_query_cache)) if args.planner_query_cache else None,
-            },
-        )
-        print(results.format())
-        if results.dataset_run_url:
-            print(f"Langfuse dataset run: {results.dataset_run_url}")
-        if args.output_details:
-            output_details = project_path(args.output_details)
-            output_details.parent.mkdir(parents=True, exist_ok=True)
-            with output_details.open("w", encoding="utf-8") as details_file:
-                for item_result in results.item_results:
-                    metadata = item_value(item_result.item, "metadata", {}) or {}
-                    expected = item_value(item_result.item, "expected_output", {}) or {}
-                    details_file.write(json.dumps({
-                        "case_id": metadata.get("case_id"),
-                        "expected_policy_ids": expected.get("expected_policy_ids", []),
-                        "output": item_result.output,
-                        "evaluations": {
-                            evaluation.name: evaluation.value
-                            for evaluation in item_result.evaluations
-                        },
-                        "trace_id": item_result.trace_id,
-                    }, ensure_ascii=False) + "\n")
-            print(f"Local details: {output_details}")
-    finally:
-        observability.shutdown()
-
-
 def run_sweep(args: argparse.Namespace) -> None:
     cases = load_evaluation_cases(project_path(args.dataset))
     planner_records = load_planner_query_records(project_path(args.planner_query_cache), cases)
@@ -414,10 +277,7 @@ def main() -> None:
     load_dotenv()
     if args.command == "sweep":
         run_sweep(args)
-    elif args.tracking == "langfuse":
-        run_langfuse(args)
     else:
-        os.environ["LANGFUSE_TRACING"] = "false"
         run_local(args)
 
 

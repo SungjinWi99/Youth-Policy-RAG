@@ -92,7 +92,6 @@ def test_chat_endpoint_forwards_request_to_policy_rag_graph():
     }
     assert rag.stream_calls[0]["exclude_expired"] is False
     assert rag.stream_calls[0]["thread_id"] == "api-user"
-    assert rag.stream_calls[0]["trace_user_id"] == "api-user"
 
 
 def test_delete_chat_endpoint_clears_graph_checkpoint():

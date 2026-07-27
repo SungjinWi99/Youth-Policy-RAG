@@ -6,11 +6,9 @@ from src.chat.models import ConversationThread
 from src.dependencies import (
     get_db,
     get_langfeather_runtime,
-    get_observability,
     get_rag_graph,
 )
 from src.langfeather_runtime import LangFeatherRuntime
-from src.observability import ObservabilityRuntime
 from src.rag.graph import PolicyRagGraph
 from src.session.models import AnonymousSession
 from src.session.schemas import (
@@ -143,7 +141,6 @@ async def stream_session_answer(
     session: AnonymousSession = Depends(get_current_session),
     db: Session = Depends(get_db),
     rag: PolicyRagGraph = Depends(get_rag_graph),
-    observability: ObservabilityRuntime = Depends(get_observability),
     langfeather_runtime: LangFeatherRuntime = Depends(get_langfeather_runtime),
 ) -> StreamingResponse:
     try:
@@ -152,16 +149,12 @@ async def stream_session_answer(
             include={"age", "gender", "job", "income", "region"}
         )
         thread_id = ConversationThread.get_thread_id(session.user_id, db)
-        trace_id = (
-            observability.create_trace_id()
-            or langfeather_runtime.create_trace_id()
-        )
+        trace_id = langfeather_runtime.create_trace_id()
         generator = rag.stream_answer(
             user_profile=rag_user_profile,
             user_input=payload.user_input,
             exclude_expired=payload.exclude_expired,
             thread_id=thread_id,
-            trace_user_id=session.user_id,
             trace_id=trace_id,
             trace_metadata=langfeather_runtime.trace_metadata(trace_id),
         )
@@ -187,26 +180,10 @@ async def stream_session_answer(
 def submit_user_feedback(
     payload: UserFeedbackRequest,
     session: AnonymousSession = Depends(get_current_session),
-    observability: ObservabilityRuntime = Depends(get_observability),
     langfeather_runtime: LangFeatherRuntime = Depends(get_langfeather_runtime),
 ) -> dict[str, str]:
     recorded = False
     errors: list[RuntimeError] = []
-    if observability.enabled:
-        try:
-            observability.record_user_feedback(
-                trace_id=payload.trace_id,
-                helpful=payload.helpful,
-                reason=payload.reason,
-                comment=payload.comment,
-                anonymous_user_id=session.user_id,
-            )
-            recorded = True
-        except RuntimeError as error:
-            errors.append(error)
-        except Exception as error:
-            print(error)
-            errors.append(RuntimeError("피드백 저장소에 연결할 수 없습니다."))
     if langfeather_runtime.enabled:
         try:
             langfeather_runtime.record_user_feedback(

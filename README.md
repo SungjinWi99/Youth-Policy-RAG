@@ -23,7 +23,7 @@
 - 서버 발급 익명 세션, 30일 보존, 프로필·상담 기록 삭제
 - 답변 근거 정책을 표시하는 활성 정책 카드
 - Streamlit 기반 API 테스트 화면
-- Langfuse Dataset과 evaluator를 이용한 RAG 품질 평가
+- 로컬 evaluator를 이용한 RAG 품질 평가
 
 ## 시스템 구조
 
@@ -48,8 +48,7 @@ flowchart LR
     GENERATOR --> LLM["Chat Model"]
     GRAPH --> SSE["SSE metadata / chunks"]
 
-    EVALDATA["Evaluation JSONL"] --> LANGFUSE["Langfuse Dataset"]
-    LANGFUSE --> EVALRUN["RAG Evaluation"]
+    EVALDATA["Evaluation JSONL"] --> EVALRUN["Local RAG Evaluation"]
     EVALRUN --> GRAPH
 ```
 
@@ -72,8 +71,8 @@ flowchart LR
 │   ├── ingest_chroma.py           # 문서 임베딩 및 Chroma 적재
 │   ├── generate_eval_dataset.py   # 평가 데이터 생성
 │   ├── generate_planner_query_cache.py # Planner query 고정
-│   ├── evaluate_retrieval.py      # local/Langfuse retrieval 평가
-│   └── evaluate_rag.py            # Langfuse RAG 평가 실행
+│   ├── evaluate_retrieval.py      # local retrieval 평가
+│   └── evaluate_rag.py            # local RAG 평가 실행
 ├── src/
 │   ├── evaluation/                # 평가 스키마, 지표, 실험 로직
 │   ├── chat/
@@ -100,7 +99,6 @@ flowchart LR
 │   ├── database.py                # SQLite engine과 session
 │   ├── dependencies.py            # FastAPI dependencies
 │   ├── eval.py                    # 평가 데이터 검증 및 evaluator
-│   ├── observability.py           # Langfuse tracing 설정
 │   ├── checkpointer.py            # SQLite LangGraph checkpointer
 │   └── factory.py                 # 모델·RAG factory
 └── tests/
@@ -163,17 +161,7 @@ UPSTAGE_API_KEY=...
 DEEPSEEK_API_KEY=...
 ```
 
-Langfuse tracing은 선택 사항이며, 아래 값이 모두 설정되고
-`LANGFUSE_TRACING`이 활성화된 경우에만 동작합니다.
-
-```bash
-LANGFUSE_TRACING=true
-LANGFUSE_PUBLIC_KEY=...
-LANGFUSE_SECRET_KEY=...
-LANGFUSE_BASE_URL=https://cloud.langfuse.com
-```
-
-LangFeather local tracing은 Langfuse와 독립적으로 선택할 수 있다. 활성화하면
+LangFeather local tracing은 선택 사항입니다. 활성화하면
 최상위 LangGraph 실행과 callback-visible node를 로컬 collector로 전송한다.
 
 ```bash
@@ -181,9 +169,8 @@ LANGFEATHER_TRACING=true
 LANGFEATHER_ENDPOINT=http://127.0.0.1:4319
 ```
 
-RAG의 SSE metadata와 LangFeather trace는 같은 trace ID를 사용한다. 상담 화면의
-도움됐어요/아쉬워요 피드백은 기존 Langfuse 기록을 유지하면서, LangFeather가 활성화된
-경우 해당 trace의 feedback에도 함께 저장된다.
+RAG의 SSE metadata와 LangFeather trace는 같은 trace ID를 사용합니다. 상담 화면의
+도움됐어요/아쉬워요 피드백은 LangFeather가 활성화된 경우 해당 trace에 저장됩니다.
 
 시연용 LangFeather API와 UI는 `http://127.0.0.1:4319`에서 실행한다. RAG backend를
 실행할 때 local SDK source를 함께 제공한다.
@@ -420,14 +407,13 @@ uv run python -m scripts.generate_eval_dataset --sample-size 100 --overwrite
 사용합니다. 여러 모델을 섞어 질문을 생성하려면
 `--generation-model PROVIDER/MODEL=WEIGHT` 옵션을 사용할 수 있습니다.
 
-Langfuse Dataset을 생성하거나 갱신하고, LangGraph RAG와 evaluator를 실행합니다.
+로컬 JSONL 평가 사례로 LangGraph RAG와 evaluator를 실행합니다.
 
 ```bash
 uv run python -m scripts.evaluate_rag
 ```
 
-같은 retrieval 진입점에서 dense, BM25, hybrid를 local 또는
-Langfuse 실험으로 평가합니다.
+같은 retrieval 진입점에서 dense, BM25, hybrid를 로컬에서 평가합니다.
 
 ```bash
 uv run python -m scripts.evaluate_retrieval run \
