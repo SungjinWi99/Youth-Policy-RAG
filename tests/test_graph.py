@@ -398,8 +398,16 @@ def test_failed_new_search_preserves_active_policy_for_later_follow_up():
         document.metadata["plcyNo"]
         for document in answer_generator.calls[2]["documents"]
     ] == ["ACTIVE"]
-    assert follow_up_events[0]["type"] == "metadata"
-    assert follow_up_events[0]["data"]["retrieved_policy_ids"] == ["ACTIVE"]
+    assert follow_up_events[0]["data"] == {
+        "stage": "planning",
+        "message": "질문을 분석하고 있습니다.",
+    }
+    assert follow_up_events[1]["data"] == {
+        "stage": "generating",
+        "message": "답변을 생성하고 있습니다.",
+    }
+    assert follow_up_events[2]["type"] == "metadata"
+    assert follow_up_events[2]["data"]["retrieved_policy_ids"] == ["ACTIVE"]
 
 
 def test_rejected_policy_exclusion_resets_on_next_user_turn():
@@ -525,13 +533,38 @@ def test_stream_answer_exposes_only_checker_accepted_policies():
     events = asyncio.run(collect_events())
 
     assert [event["type"] for event in events] == [
+        "status",
+        "status",
+        "status",
+        "status",
         "metadata",
         "chunk",
         "done",
     ]
-    assert events[0]["data"]["retrieved_policy_ids"] == ["HIGH"]
-    assert events[0]["data"]["trace_id"] == "a" * 32
-    assert events[1]["data"] == "답변: 지원 정책"
+    assert [
+        event["data"]
+        for event in events[:4]
+    ] == [
+        {
+            "stage": "planning",
+            "message": "질문을 분석하고 있습니다.",
+        },
+        {
+            "stage": "search",
+            "message": "관련 정책을 검색하고 있습니다.",
+        },
+        {
+            "stage": "validating",
+            "message": "정책이 사용자에게 적합한지 확인하고 있습니다.",
+        },
+        {
+            "stage": "generating",
+            "message": "답변을 생성하고 있습니다.",
+        },
+    ]
+    assert events[4]["data"]["retrieved_policy_ids"] == ["HIGH"]
+    assert events[4]["data"]["trace_id"] == "a" * 32
+    assert events[5]["data"] == "답변: 지원 정책"
 
 
 def test_delete_conversation_removes_persisted_documents():

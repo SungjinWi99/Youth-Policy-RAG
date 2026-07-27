@@ -27,6 +27,10 @@ class ObservabilityRuntime:
 
     client: Any | None = None
 
+    @property
+    def enabled(self) -> bool:
+        return self.client is not None
+
     def build_trace_config(
         self,
         *,

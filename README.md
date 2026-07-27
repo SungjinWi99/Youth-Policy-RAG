@@ -173,6 +173,28 @@ LANGFUSE_SECRET_KEY=...
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
 
+LangFeather local tracing은 Langfuse와 독립적으로 선택할 수 있다. 활성화하면
+최상위 LangGraph 실행과 callback-visible node를 로컬 collector로 전송한다.
+
+```bash
+LANGFEATHER_TRACING=true
+LANGFEATHER_ENDPOINT=http://127.0.0.1:4319
+```
+
+RAG의 SSE metadata와 LangFeather trace는 같은 trace ID를 사용한다. 상담 화면의
+도움됐어요/아쉬워요 피드백은 기존 Langfuse 기록을 유지하면서, LangFeather가 활성화된
+경우 해당 trace의 feedback에도 함께 저장된다.
+
+시연용 LangFeather API와 UI는 `http://127.0.0.1:4319`에서 실행한다. RAG backend를
+실행할 때 local SDK source를 함께 제공한다.
+
+```bash
+PYTHONPATH=../langfeather/sdk/python/src \
+LANGFEATHER_TRACING=true \
+LANGFEATHER_ENDPOINT=http://127.0.0.1:4319 \
+uv run --locked uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
 ## 데이터 준비
 
 모든 명령은 프로젝트 루트에서 실행합니다.
@@ -370,10 +392,12 @@ curl -N -X POST http://127.0.0.1:8000/chat \
   }'
 ```
 
-SSE 응답은 검색 context와 정책 ID를 담은 `metadata`, 답변 텍스트 조각을 담은
-`chunk`, 완료를 알리는 `done` 이벤트로 전달됩니다.
+SSE 응답은 처리 단계를 알리는 `status`, 검색 context와 정책 ID를 담은 `metadata`,
+답변 텍스트 조각을 담은 `chunk`, 완료를 알리는 `done` 이벤트로 전달됩니다.
 
 ```text
+data: {"type":"status","data":{"stage":"search","message":"관련 정책을 검색하고 있습니다."}}
+
 data: {"type":"metadata","data":{"contexts":[...],"retrieved_policy_ids":[...]}}
 
 data: {"type":"chunk","data":"답변 일부"}

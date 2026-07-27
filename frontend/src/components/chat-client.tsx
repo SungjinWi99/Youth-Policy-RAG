@@ -27,7 +27,7 @@ const SUGGESTED_QUESTIONS = [
 type AppState = "loading" | "onboarding" | "ready";
 
 type SseEvent = {
-  type: "metadata" | "chunk" | "done";
+  type: "metadata" | "status" | "chunk" | "done";
   data?: unknown;
 };
 
@@ -62,6 +62,7 @@ export function ChatClient() {
   const [draft, setDraft] = useState(searchParams.get("question") ?? "");
   const [excludeExpired, setExcludeExpired] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [streamStatus, setStreamStatus] = useState("");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [pageError, setPageError] = useState("");
@@ -217,6 +218,13 @@ export function ChatClient() {
   }
 
   function handleSseEvent(event: SseEvent, assistantId: string) {
+    if (event.type === "status") {
+      const data = event.data as { message?: string } | undefined;
+      if (data?.message) {
+        setStreamStatus(data.message);
+      }
+      return;
+    }
     if (event.type === "metadata") {
       const data = event.data as
         | { retrieved_policy_ids?: string[]; trace_id?: string }
@@ -264,6 +272,7 @@ export function ChatClient() {
     setDraft("");
     setPageError("");
     setIsStreaming(true);
+    setStreamStatus("질문을 분석하고 있습니다.");
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -352,6 +361,7 @@ export function ChatClient() {
     } finally {
       abortRef.current = null;
       setIsStreaming(false);
+      setStreamStatus("");
     }
   }
 
@@ -483,14 +493,16 @@ export function ChatClient() {
                     <span className="message-author">
                       {message.role === "assistant" ? "정책 상담" : "나"}
                     </span>
-                    {message.role === "assistant" && !message.content ? (
+                    {message.role === "assistant" &&
+                    !message.content &&
+                    isStreaming ? (
                       <div className="typing-status" role="status">
                         <span className="typing-dots" aria-hidden="true">
                           <i />
                           <i />
                           <i />
                         </span>
-                        관련 정책을 확인하고 있습니다.
+                        {streamStatus || "답변을 준비하고 있습니다."}
                       </div>
                     ) : (
                       <>
