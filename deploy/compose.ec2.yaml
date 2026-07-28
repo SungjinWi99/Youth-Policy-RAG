@@ -1,0 +1,36 @@
+name: youth-policy-rag
+
+services:
+  api:
+    image: ${ECR_REPOSITORY}:api-v1
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      # The local LangFeather SDK is not bundled in the API image.
+      LANGFEATHER_TRACING: "false"
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+    volumes:
+      - ${DATA_DIR:-/opt/youth-policy-rag/data}:/app/data
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  web:
+    image: ${ECR_REPOSITORY}:web-v1
+    environment:
+      BACKEND_URL: http://api:8000
+    depends_on:
+      - api
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  proxy:
+    image: caddy:2.10-alpine
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile.http:/etc/caddy/Caddyfile:ro
+    restart: unless-stopped

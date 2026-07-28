@@ -120,6 +120,36 @@ uv run uvicorn main:app --reload
 uv run streamlit run demo_streamlit.py
 ```
 
+## Docker Compose 실행
+
+FastAPI와 Next.js를 각각 컨테이너로 실행합니다. 브라우저에는 Next.js의
+`3000` 포트만 공개되고, FastAPI는 Compose 내부 네트워크에서만 접근됩니다.
+
+먼저 정책 원본, Chroma 인덱스, SQLite DB가 들어 있는 `data/` 디렉터리를
+배포 대상에 준비합니다. 이 디렉터리는 컨테이너에 포함하지 않고 호스트에서
+마운트하므로, 컨테이너를 교체해도 검색 인덱스와 상담 기록이 유지됩니다.
+
+```bash
+cp .env.example .env
+# .env에 현재 config.yaml이 사용하는 API 키를 입력합니다.
+docker compose up --build -d
+docker compose logs -f api
+```
+
+상담 화면은 기본적으로 `http://localhost:3000`에서 엽니다. 해당 포트를 다른
+서비스가 사용 중이면 `.env`에 `WEB_PORT=3001`처럼 지정하고 해당 포트로 접속합니다.
+HTTPS 리버스 프록시 뒤에서
+운영할 때는 `.env`의 `SESSION_COOKIE_SECURE=true`로 변경합니다. 로컬 HTTP
+테스트에서는 기본값 `false`를 유지합니다.
+
+Compose 환경의 Next.js는 `BACKEND_URL=http://api:8000`으로 FastAPI 서비스에
+연결합니다. 따라서 브라우저 요청은 계속 `/api/*`의 same-origin 프록시를
+사용하며 FastAPI의 `8000` 포트를 외부에 열 필요가 없습니다.
+
+Compose 기본 구성은 로컬 LangFeather SDK를 이미지에 포함하지 않으므로 tracing을
+비활성화합니다. LangFeather까지 컨테이너로 운영하려면 collector와 SDK를 별도
+이미지·서비스로 추가한 뒤에 활성화하세요.
+
 ## 설정
 
 모델과 검색 설정은 `config.yaml`에서 관리합니다.
