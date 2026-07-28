@@ -3830,7 +3830,6 @@ dependencies = [
     { name = "langchain-ollama" },
     { name = "langchain-openai" },
     { name = "langchain-upstage" },
-    { name = "langfeather" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "python-dotenv" },
@@ -3841,6 +3840,11 @@ dependencies = [
     { name = "streamlit" },
     { name = "tqdm" },
     { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+langfeather = [
+    { name = "langfeather" },
 ]
 
 [package.dev-dependencies]
@@ -3862,7 +3866,7 @@ requires-dist = [
     { name = "langchain-ollama", specifier = ">=1.0.0" },
     { name = "langchain-openai", specifier = ">=1.0.0" },
     { name = "langchain-upstage", specifier = ">=0.7.0" },
-    { name = "langfeather", editable = "../langfeather/sdk/python" },
+    { name = "langfeather", marker = "extra == 'langfeather'", editable = "../langfeather/sdk/python" },
     { name = "langgraph", specifier = ">=1.1.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
@@ -3874,6 +3878,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.66.0" },
     { name = "uvicorn", specifier = ">=0.30.0" },
 ]
+provides-extras = ["langfeather"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0.0" }]
