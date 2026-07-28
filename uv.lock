@@ -1378,6 +1378,15 @@ wheels = [
 ]
 
 [[package]]
+name = "langfeather"
+version = "0.1.0"
+source = { editable = "../langfeather/sdk/python" }
+
+[package.metadata]
+requires-dist = [{ name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=1.0,<2" }]
+provides-extras = ["langchain"]
+
+[[package]]
 name = "langgraph"
 version = "1.2.9"
 source = { registry = "https://pypi.org/simple" }
@@ -3821,6 +3830,7 @@ dependencies = [
     { name = "langchain-ollama" },
     { name = "langchain-openai" },
     { name = "langchain-upstage" },
+    { name = "langfeather" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "python-dotenv" },
@@ -3852,6 +3862,7 @@ requires-dist = [
     { name = "langchain-ollama", specifier = ">=1.0.0" },
     { name = "langchain-openai", specifier = ">=1.0.0" },
     { name = "langchain-upstage", specifier = ">=0.7.0" },
+    { name = "langfeather", editable = "../langfeather/sdk/python" },
     { name = "langgraph", specifier = ">=1.1.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },

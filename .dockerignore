@@ -1,0 +1,14 @@
+.git
+.codex
+.env
+.venv
+.pytest_cache
+__pycache__
+*.py[cod]
+data
+docs
+deploy
+frontend
+tests
+demo_streamlit.py
+test.ipynb

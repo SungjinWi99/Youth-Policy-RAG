@@ -17,6 +17,7 @@ dependencies = [
     "langchain-ollama>=1.0.0",
     "langchain-openai>=1.0.0",
     "langchain-upstage>=0.7.0",
+    "langfeather",
     "langgraph>=1.1.0",
     "langgraph-checkpoint-sqlite>=3.0.0",
     "python-dotenv>=1.0.1",
@@ -36,6 +37,9 @@ dev = [
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+langfeather = { path = "../langfeather/sdk/python", editable = true }
 
 [tool.pytest.ini_options]
 pythonpath = [".", "src"]
