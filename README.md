@@ -146,9 +146,14 @@ Compose 환경의 Next.js는 `BACKEND_URL=http://api:8000`으로 FastAPI 서비�
 연결합니다. 따라서 브라우저 요청은 계속 `/api/*`의 same-origin 프록시를
 사용하며 FastAPI의 `8000` 포트를 외부에 열 필요가 없습니다.
 
-Compose 기본 구성은 로컬 LangFeather SDK를 이미지에 포함하지 않으므로 tracing을
-비활성화합니다. LangFeather까지 컨테이너로 운영하려면 collector와 SDK를 별도
-이미지·서비스로 추가한 뒤에 활성화하세요.
+Compose는 `langfeather` collector 컨테이너(`ghcr.io/sungjinwi99/langfeather`)를
+`api`와 network namespace를 공유하도록(`network_mode: service:api`) 띄웁니다.
+LangFeather 0.2.0의 collector는 Host 헤더가 `localhost`/`127.0.0.1`이 아닌 요청을
+거부하므로, Compose service 이름(`http://langfeather:4319`)으로는 연결할 수 없습니다.
+`api` 서비스는 그래서 `LANGFEATHER_ENDPOINT=http://127.0.0.1:4319`로 loopback을
+사용합니다. Collector는 인증이 없는 single-user local-first prototype이므로
+호스트 포트는 `127.0.0.1:4319`로만 열어 외부에 노출하지 않습니다. UI를 보려면
+배포 서버로 SSH 터널을 연 뒤 `http://127.0.0.1:4319`에 접속하세요.
 
 ## 설정
 
@@ -191,8 +196,9 @@ UPSTAGE_API_KEY=...
 DEEPSEEK_API_KEY=...
 ```
 
-LangFeather local tracing은 선택 사항입니다. 활성화하면
-최상위 LangGraph 실행과 callback-visible node를 로컬 collector로 전송한다.
+LangFeather tracing은 기본적으로 켜져 있습니다. 최상위 LangGraph 실행과
+callback-visible node를 collector로 전송합니다. Collector가 없는 환경(예: CI)에서는
+꺼둘 수 있습니다.
 
 ```bash
 LANGFEATHER_TRACING=true
@@ -200,15 +206,18 @@ LANGFEATHER_ENDPOINT=http://127.0.0.1:4319
 ```
 
 RAG의 SSE metadata와 LangFeather trace는 같은 trace ID를 사용합니다. 상담 화면의
-도움됐어요/아쉬워요 피드백은 LangFeather가 활성화된 경우 해당 trace에 저장됩니다.
+도움됐어요/아쉬워요 피드백은 tracing이 활성화된 경우 해당 trace에 저장됩니다.
+전송은 best-effort이므로 collector가 꺼져 있어도 답변 생성은 계속되지만, 피드백
+저장 API는 503을 반환합니다.
 
-시연용 LangFeather API와 UI는 `http://127.0.0.1:4319`에서 실행한다. RAG backend를
-실행할 때 local SDK source를 함께 제공한다.
+로컬에서 backend를 단독 실행할 때는 먼저 collector를 띄웁니다.
 
 ```bash
-PYTHONPATH=../langfeather/sdk/python/src \
-LANGFEATHER_TRACING=true \
-LANGFEATHER_ENDPOINT=http://127.0.0.1:4319 \
+docker run -d --name langfeather \
+  -p 127.0.0.1:4319:4319 \
+  -v langfeather-data:/data \
+  ghcr.io/sungjinwi99/langfeather:0.2.0
+
 uv run --locked uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 

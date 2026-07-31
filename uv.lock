@@ -1379,12 +1379,17 @@ wheels = [
 
 [[package]]
 name = "langfeather"
-version = "0.1.0"
-source = { editable = "../langfeather/sdk/python" }
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/af/1d/f9690c5bbcc44b5a230cb7800aad5219999da793c12794568280e405f593/langfeather-0.2.0.tar.gz", hash = "sha256:aea70f49f97341b399f60f2aba0a257791e8198dd15932f13deedc72c6b96ad4", size = 44211, upload-time = "2026-07-30T12:14:43.59Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1a/68/3d1444875ab1d5c0b6182a5e46331af45edc4baf8f9d61cf7c757cf97a06/langfeather-0.2.0-py3-none-any.whl", hash = "sha256:a4d6eaaf7950c00ad38134a2079485558da39fb154a9a339e97257534e228da5", size = 41524, upload-time = "2026-07-30T12:14:42.455Z" },
+]
 
-[package.metadata]
-requires-dist = [{ name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=1.0,<2" }]
-provides-extras = ["langchain"]
+[package.optional-dependencies]
+langchain = [
+    { name = "langchain-core" },
+]
 
 [[package]]
 name = "langgraph"
@@ -3830,6 +3835,7 @@ dependencies = [
     { name = "langchain-ollama" },
     { name = "langchain-openai" },
     { name = "langchain-upstage" },
+    { name = "langfeather", extra = ["langchain"] },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
     { name = "python-dotenv" },
@@ -3840,11 +3846,6 @@ dependencies = [
     { name = "streamlit" },
     { name = "tqdm" },
     { name = "uvicorn" },
-]
-
-[package.optional-dependencies]
-langfeather = [
-    { name = "langfeather" },
 ]
 
 [package.dev-dependencies]
@@ -3866,7 +3867,7 @@ requires-dist = [
     { name = "langchain-ollama", specifier = ">=1.0.0" },
     { name = "langchain-openai", specifier = ">=1.0.0" },
     { name = "langchain-upstage", specifier = ">=0.7.0" },
-    { name = "langfeather", marker = "extra == 'langfeather'", editable = "../langfeather/sdk/python" },
+    { name = "langfeather", extras = ["langchain"], specifier = ">=0.2.0,<0.3" },
     { name = "langgraph", specifier = ">=1.1.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
@@ -3878,7 +3879,6 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.66.0" },
     { name = "uvicorn", specifier = ">=0.30.0" },
 ]
-provides-extras = ["langfeather"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0.0" }]
