@@ -6,13 +6,32 @@ services:
     env_file:
       - ${APP_ENV_FILE:-.env}
     environment:
-      # The local LangFeather SDK is not bundled in the API image.
-      LANGFEATHER_TRACING: "false"
+      LANGFEATHER_TRACING: ${LANGFEATHER_TRACING:-true}
+      # The langfeather container shares this service's network namespace
+      # (see below), so it is reachable over loopback like a local process.
+      # LangFeather 0.2.0 only accepts requests whose Host header is
+      # localhost/127.0.0.1, so a Compose service-name URL would be rejected.
+      LANGFEATHER_ENDPOINT: http://127.0.0.1:4319
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
     volumes:
       - ${DATA_DIR:-/opt/youth-policy-rag/data}:/app/data
+    # LangFeather UI, published on all interfaces for plain-HTTP testing
+    # over the EC2 instance's public IP. No auth on the collector — open
+    # port 4319 in the security group only for as long as you're testing,
+    # and put this behind SSH tunnel / reverse proxy auth before real use.
+    ports:
+      - "4319:4319"
     expose:
       - "8000"
+    restart: unless-stopped
+
+  langfeather:
+    image: ghcr.io/sungjinwi99/langfeather:0.2.0
+    network_mode: "service:api"
+    volumes:
+      - ${LANGFEATHER_DATA_DIR:-/opt/youth-policy-rag/langfeather-data}:/data
+    depends_on:
+      - api
     restart: unless-stopped
 
   web:
