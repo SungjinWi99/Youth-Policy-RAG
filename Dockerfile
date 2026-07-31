@@ -8,7 +8,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+# The project pins LangFeather to the adjacent local repository. Compose
+# supplies that repository as a named BuildKit context, so recreate the same
+# path expected by pyproject.toml inside the image before installing extras.
+COPY --from=langfeather-sdk sdk/python /langfeather/sdk/python
+RUN uv sync --frozen --no-dev --extra langfeather --no-install-project
 
 COPY main.py config.yaml ./
 COPY src ./src

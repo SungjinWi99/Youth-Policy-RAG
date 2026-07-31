@@ -15,14 +15,13 @@
 - 명시적인 정책 적합성 verdict와 최대 3회 재검색
 - 탈락 정책을 제외한 동일 Query 재사용 또는 필요 시 의미 기반 Query 변경
 - Checker를 통과한 정책만 사용하는 답변 생성
-- 사용자 ID별 SQLite 대화 기록 및 연속 대화
+- 익명 세션 행에 프로필·대화 스레드를 함께 보관
 - FastAPI SSE 스트리밍 응답
-- SQLite 기반 사용자 프로필 CRUD
+- 세션 기반 사용자 프로필 관리
 - 정책 ID 기반 원본 정책 상세 조회 API
 - Next.js 기반 실서비스형 상담 프론트엔드
 - 서버 발급 익명 세션, 30일 보존, 프로필·상담 기록 삭제
 - 답변 근거 정책을 표시하는 활성 정책 카드
-- Streamlit 기반 API 테스트 화면
 - 로컬 evaluator를 이용한 RAG 품질 평가
 
 ## 시스템 구조
@@ -33,8 +32,8 @@ flowchart LR
     RAW --> INGEST["ingest_chroma.py"]
     INGEST --> CHROMA["Chroma Vector Store"]
 
-    CLIENT["Next.js / API Client / Streamlit"] --> FASTAPI["FastAPI"]
-    FASTAPI --> USERDB["SQLite User Profile"]
+    CLIENT["Next.js / API Client"] --> FASTAPI["FastAPI"]
+    FASTAPI --> USERDB["SQLite Session / Profile"]
     FASTAPI --> GRAPH["LangGraph RAG"]
     GRAPH --> PLANNER["Retrieval Planner<br/>requirement + query"]
     PLANNER -->|"needs_retrieval=true"| RETRIEVE["retriever node"]
@@ -60,7 +59,6 @@ flowchart LR
 ├── main.py                        # FastAPI 애플리케이션
 ├── frontend/                      # Next.js 상담 웹서비스
 ├── deploy/                        # Nginx·systemd 배포 예시
-├── demo_streamlit.py              # 로컬 테스트 UI
 ├── data/
 │   ├── raw/                       # OpenAPI 원본 데이터
 │   ├── chroma/                    # Chroma 영속 데이터
@@ -75,10 +73,7 @@ flowchart LR
 │   └── evaluate_rag.py            # local RAG 평가 실행
 ├── src/
 │   ├── evaluation/                # 평가 스키마, 지표, 실험 로직
-│   ├── chat/
-│   │   ├── models.py              # 대화 thread ID 저장 모델
-│   │   ├── router.py              # chat API
-│   │   └── schemas.py             # chat request schema
+│   ├── session/                   # 익명 세션 행과 프로필·대화 API
 │   ├── policy/                    # 정책 상세 조회 모델과 API
 │   ├── rag/
 │   │   ├── graph.py               # LangGraph workflow와 public API
@@ -94,7 +89,6 @@ flowchart LR
 │   │   │   └── ensemble_retriever.py # weighted RRF hybrid 검색
 │   │   ├── state.py               # graph state schema
 │   │   └── utils.py               # context와 사용자 프로필 포맷
-│   ├── user/                      # 사용자 프로필 모델과 API
 │   ├── config.py                  # config.yaml 로더
 │   ├── database.py                # SQLite engine과 session
 │   ├── dependencies.py            # FastAPI dependencies
@@ -117,10 +111,14 @@ uv sync
 ```bash
 uv run python -m scripts.collect_data --limit-test
 uv run uvicorn main:app --reload
-uv run streamlit run demo_streamlit.py
 ```
 
 ## Docker Compose 실행
+
+로컬 Compose는 형제 디렉터리 `../langfeather`의 SDK를 API 이미지에 포함합니다.
+collector/UI는 LangFeather 프로젝트에서 별도로 실행하며, API 추적은 기본으로
+활성화됩니다. 대시보드는 `http://127.0.0.1:4319`에서 확인합니다. LangFeather를 잠시 끄려면
+`LANGFEATHER_TRACING=false docker compose up -d --build`를 사용합니다.
 
 FastAPI와 Next.js를 각각 컨테이너로 실행합니다. 브라우저에는 Next.js의
 `3000` 포트만 공개되고, FastAPI는 Compose 내부 네트워크에서만 접근됩니다.
@@ -346,34 +344,12 @@ LAN에 공개할 필요가 없습니다.
 프론트 제품 범위는 `docs/frontend_product_spec.md`, 로컬·EC2 배포 구조는
 `docs/frontend_deployment.md`를 참고합니다.
 
-### Streamlit 데모
-
-FastAPI 서버를 먼저 실행한 뒤 별도 터미널에서 실행합니다.
-
-```bash
-streamlit run demo_streamlit.py --server.port 8501
-```
-
-브라우저에서 `http://127.0.0.1:8501`에 접속합니다. 다른 API 주소를 사용할
-경우 환경변수로 지정할 수 있습니다.
-
-```bash
-YOUTH_RAG_API_URL=http://127.0.0.1:8001 \
-streamlit run demo_streamlit.py --server.port 8501
-```
-
 ## API
 
 | Method | Endpoint | 설명 |
 | --- | --- | --- |
-| `POST` | `/user/registration` | 사용자 프로필 등록 |
-| `GET` | `/user/{user_id}` | 사용자 프로필 조회 |
-| `POST` | `/user/{user_id}` | 사용자 프로필 수정 |
-| `DELETE` | `/user/{user_id}` | 사용자 프로필 삭제 |
 | `GET` | `/policies/{policy_id}` | 정책 상세 정보 조회 |
 | `POST` | `/policies/batch` | 여러 정책 상세 정보 조회 |
-| `POST` | `/chat` | 사용자 프로필 기반 정책 검색 및 SSE 답변 |
-| `DELETE` | `/chat/{user_id}` | 사용자 대화 기록 삭제 |
 | `POST` | `/sessions/anonymous` | 30일 익명 상담 세션 생성 |
 | `GET` | `/sessions/current` | 현재 익명 세션과 프로필 조회 |
 | `PATCH` | `/me/profile` | 현재 세션의 프로필 수정 |
@@ -382,28 +358,29 @@ streamlit run demo_streamlit.py --server.port 8501
 | `DELETE` | `/me/conversation` | 현재 상담 기록 초기화 |
 | `DELETE` | `/me/data` | 프로필·상담·익명 세션 전체 삭제 |
 
-사용자 등록 예시:
+익명 상담 세션 생성 예시:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/user/registration \
+curl -c /tmp/youth-policy-cookies.txt \
+  -X POST http://127.0.0.1:8000/sessions/anonymous \
   -H "Content-Type: application/json" \
   -d '{
-    "user_id": "sample-user",
     "age": 27,
     "gender": "여성",
     "job": "구직자",
     "income": 3000,
-    "region": "서울특별시"
+    "region": "서울특별시",
+    "accepted_storage": true
   }'
 ```
 
-스트리밍 채팅 예시:
+스트리밍 채팅은 위에서 받은 세션 쿠키를 함께 보냅니다.
 
 ```bash
-curl -N -X POST http://127.0.0.1:8000/chat \
+curl -N -b /tmp/youth-policy-cookies.txt \
+  -X POST http://127.0.0.1:8000/me/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "user_id": "sample-user",
     "user_input": "서울에서 지원받을 수 있는 주거 정책을 알려줘",
     "exclude_expired": true
   }'

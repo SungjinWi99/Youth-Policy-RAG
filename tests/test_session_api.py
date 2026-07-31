@@ -8,7 +8,6 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from src.dependencies import get_db, get_langfeather_runtime, get_rag_graph
 from src.session.models import AnonymousSession
 from src.session.router import session_router
-from src.user.models import UserProfile
 
 
 class FakeRagGraph:
@@ -119,10 +118,11 @@ def test_anonymous_session_sets_private_cookie_and_restores_profile():
 
     with Session(engine) as db:
         assert len(db.exec(select(AnonymousSession)).all()) == 1
-        assert len(db.exec(select(UserProfile)).all()) == 1
+        session = db.exec(select(AnonymousSession)).one()
+        assert session.region == "서울"
 
 
-def test_session_chat_uses_internal_user_and_returns_sse():
+def test_session_chat_uses_session_thread_and_returns_sse():
     client, _, rag = build_client()
     start_session(client)
 
@@ -148,7 +148,7 @@ def test_session_chat_uses_internal_user_and_returns_sse():
     call = rag.stream_calls[0]
     assert call["user_input"] == "월세 지원을 알려줘."
     assert call["user_profile"]["region"] == "서울"
-    assert call["thread_id"].startswith("anon_")
+    assert call["thread_id"].startswith("session:")
     assert call["trace_id"] == "b" * 32
     assert call["trace_metadata"] == {"langfeather_trace_id": "b" * 32}
     assert events[0]["data"]["trace_id"] == "b" * 32
@@ -172,6 +172,9 @@ def test_session_feedback_is_recorded_against_trace():
     assert response.json() == {"message": "피드백이 저장되었습니다."}
     assert rag.langfeather_runtime.feedback_calls[0]["trace_id"] == "a" * 32
     assert rag.langfeather_runtime.feedback_calls[0]["reason"] == "missing-details"
+    assert rag.langfeather_runtime.feedback_calls[0][
+        "anonymous_session_id"
+    ].startswith("session:")
 
 
 def test_negative_feedback_requires_reason():
@@ -204,7 +207,27 @@ def test_conversation_restore_and_delete_all_data():
 
     with Session(engine) as db:
         assert db.exec(select(AnonymousSession)).all() == []
-        assert db.exec(select(UserProfile)).all() == []
+
+
+def test_clear_conversation_keeps_profile_and_rotates_thread():
+    client, engine, rag = build_client()
+    start_session(client)
+    client.post("/me/chat", json={"user_input": "주거 정책"})
+
+    with Session(engine) as db:
+        old_thread_id = db.exec(select(AnonymousSession)).one().thread_id
+
+    cleared = client.delete("/me/conversation")
+
+    assert cleared.status_code == 200
+    assert cleared.json() == {"message": "대화 기록 삭제 완료"}
+    assert rag.deleted_thread_ids == [old_thread_id]
+    assert client.get("/sessions/current").status_code == 200
+
+    with Session(engine) as db:
+        session = db.exec(select(AnonymousSession)).one()
+        assert session.thread_id != old_thread_id
+        assert session.region == "서울"
 
 
 def test_anonymous_session_requires_storage_consent():

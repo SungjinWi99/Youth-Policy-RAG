@@ -5,12 +5,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        langfeather-sdk: ../langfeather
     env_file:
       - .env
     environment:
-      # LangFeather's local SDK is intentionally not bundled in this image.
-      LANGFEATHER_TRACING: "false"
+      LANGFEATHER_TRACING: ${LANGFEATHER_TRACING:-true}
+      # The local collector runs in the sibling LangFeather Compose project.
+      LANGFEATHER_ENDPOINT: http://host.docker.internal:4319
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # Chroma index and SQLite databases must survive container replacement.
       - ./data:/app/data

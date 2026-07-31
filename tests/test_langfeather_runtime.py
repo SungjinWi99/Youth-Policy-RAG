@@ -89,7 +89,7 @@ def test_runtime_uses_shared_trace_id_and_posts_feedback(monkeypatch):
         helpful=False,
         reason="missing-details",
         comment="신청 방법이 더 필요해요.",
-        anonymous_user_id="anon_test",
+        anonymous_session_id="session:test",
     )
 
     assert captured["url"] == "http://127.0.0.1:4319/api/v1/feedback"
@@ -98,7 +98,7 @@ def test_runtime_uses_shared_trace_id_and_posts_feedback(monkeypatch):
     assert payload["trace_id"] == trace_id
     assert payload["value"] is False
     assert payload["metadata"]["reason"] == "missing-details"
-    assert payload["metadata"]["anonymous_user_id"] == "anon_test"
+    assert payload["metadata"]["anonymous_session_id"] == "session:test"
     assert datetime.fromisoformat(payload["created_at"]) == datetime.fromisoformat(
         payload["updated_at"]
     )

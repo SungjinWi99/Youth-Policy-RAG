@@ -54,7 +54,7 @@ class LangFeatherRuntime:
         helpful: bool,
         reason: str | None,
         comment: str | None,
-        anonymous_user_id: str,
+        anonymous_session_id: str,
     ) -> None:
         if self.sdk is None:
             raise RuntimeError("LangFeather 피드백 수집이 비활성화되어 있습니다.")
@@ -70,7 +70,7 @@ class LangFeatherRuntime:
             "metadata": {
                 "source": "youth-policy-rag",
                 "reason": reason,
-                "anonymous_user_id": anonymous_user_id,
+                "anonymous_session_id": anonymous_session_id,
             },
             "created_at": timestamp,
             "updated_at": timestamp,
