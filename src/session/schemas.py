@@ -3,15 +3,21 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from src.user.schemas import UserBase
+from src.policy.utils import RegionName
+from src.session.models import SessionProfile
 
 
-class AnonymousSessionCreate(UserBase):
+class AnonymousSessionCreate(SessionProfile):
     accepted_storage: Literal[True]
+    region: RegionName | None = None
 
 
-class PublicProfile(UserBase):
+class PublicProfile(SessionProfile):
     pass
+
+
+class SessionProfileUpdate(SessionProfile):
+    region: RegionName | None = None
 
 
 class SessionStatus(BaseModel):
