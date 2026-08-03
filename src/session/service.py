@@ -7,12 +7,9 @@ from uuid import uuid4
 from fastapi import Depends, HTTPException, Request, Response
 from sqlmodel import Session, select
 
-from src.chat.models import ConversationThread
 from src.dependencies import get_db
 from src.rag.graph import PolicyRagGraph
-from src.session.models import AnonymousSession, utc_now
-from src.user.models import UserProfile
-from src.user.schemas import UserBase
+from src.session.models import AnonymousSession, SessionProfile, utc_now
 
 
 SESSION_COOKIE_NAME = "youth_policy_session"
@@ -79,29 +76,48 @@ def touch_session(session: AnonymousSession, db: Session) -> AnonymousSession:
 
 
 def create_session(
-    profile_data: UserBase,
+    profile_data: SessionProfile,
     db: Session,
-) -> tuple[str, AnonymousSession, UserProfile]:
+) -> tuple[str, AnonymousSession]:
     token = secrets.token_urlsafe(32)
     now = utc_now()
-    user_id = f"anon_{uuid4().hex}"
-    profile = UserProfile(
-        user_id=user_id,
-        **profile_data.model_dump(exclude_none=True),
-    )
     session = AnonymousSession(
         token_hash=_token_hash(token),
-        user_id=user_id,
+        thread_id=f"session:{uuid4().hex}",
         time_created=now,
         time_updated=now,
         expires_at=now + timedelta(days=SESSION_RETENTION_DAYS),
+        **profile_data.model_dump(exclude_none=True),
     )
-    db.add(profile)
     db.add(session)
     db.commit()
-    db.refresh(profile)
     db.refresh(session)
-    return token, session, profile
+    return token, session
+
+
+def update_session_profile(
+    session: AnonymousSession,
+    profile_data: SessionProfile,
+    db: Session,
+) -> AnonymousSession:
+    session.sqlmodel_update(profile_data.model_dump(exclude_unset=True))
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def reset_conversation(
+    session: AnonymousSession,
+    db: Session,
+) -> str:
+    old_thread_id = session.thread_id
+    session.thread_id = f"session:{uuid4().hex}"
+    session.time_updated = utc_now()
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return old_thread_id
 
 
 def delete_session_data(
@@ -109,22 +125,12 @@ def delete_session_data(
     db: Session,
     rag: PolicyRagGraph | None,
 ) -> None:
-    user_id = session.user_id
-    conversation = db.get(ConversationThread, user_id)
-    thread_id = conversation.thread_id if conversation else user_id
-    profile = db.get(UserProfile, user_id)
-
-    if conversation:
-        db.delete(conversation)
-    if profile:
-        db.delete(profile)
+    thread_id = session.thread_id
     db.delete(session)
     db.commit()
 
     if rag:
         rag.delete_conversation(thread_id)
-        if thread_id != user_id:
-            rag.delete_conversation(user_id)
 
 
 def cleanup_expired_sessions(

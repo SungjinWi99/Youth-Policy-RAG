@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
-from src.chat.models import ConversationThread
 from src.dependencies import (
     get_db,
     get_langfeather_runtime,
@@ -10,11 +9,15 @@ from src.dependencies import (
 )
 from src.langfeather_runtime import LangFeatherRuntime
 from src.rag.graph import PolicyRagGraph
-from src.session.models import AnonymousSession
+from src.session.models import (
+    PROFILE_FIELD_NAMES,
+    AnonymousSession,
+)
 from src.session.schemas import (
     AnonymousSessionCreate,
     ConversationSnapshot,
     PublicProfile,
+    SessionProfileUpdate,
     SessionStatus,
     UserFeedbackRequest,
     WebChatRequest,
@@ -31,29 +34,28 @@ from src.session.service import (
     is_expired,
     set_session_cookie,
     touch_session,
+    reset_conversation,
+    update_session_profile,
 )
-from src.user.models import UserProfile
-from src.user.schemas import UserUpdate
 
 
 session_router = APIRouter(tags=["web"])
 
 
-def _public_profile(profile: UserProfile) -> PublicProfile:
+def _public_profile(session: AnonymousSession) -> PublicProfile:
     return PublicProfile.model_validate(
-        profile.model_dump(
-            include={"age", "gender", "job", "income", "region"}
+        session.model_dump(
+            include=PROFILE_FIELD_NAMES
         )
     )
 
 
 def _session_status(
     session: AnonymousSession,
-    profile: UserProfile,
 ) -> SessionStatus:
     return SessionStatus(
         expires_at=as_utc(session.expires_at),
-        profile=_public_profile(profile),
+        profile=_public_profile(session),
     )
 
 
@@ -71,21 +73,21 @@ def start_anonymous_session(
 ) -> SessionStatus:
     cleanup_expired_sessions(db, rag)
     existing = find_session(request, db)
-    profile_update = UserUpdate.model_validate(
+    profile_update = SessionProfileUpdate.model_validate(
         payload.model_dump(exclude={"accepted_storage"})
     )
 
     if existing and not is_expired(existing):
-        profile = UserProfile.update(existing.user_id, profile_update, db)
-        touch_session(existing, db)
+        session = update_session_profile(existing, profile_update, db)
+        session = touch_session(session, db)
         token = request.cookies.get(SESSION_COOKIE_NAME)
         if token:
             set_session_cookie(response, token)
-        return _session_status(existing, profile)
+        return _session_status(session)
 
-    token, session, profile = create_session(profile_update, db)
+    token, session = create_session(profile_update, db)
     set_session_cookie(response, token)
-    return _session_status(session, profile)
+    return _session_status(session)
 
 
 @session_router.get(
@@ -96,13 +98,11 @@ def get_session_status(
     request: Request,
     response: Response,
     session: AnonymousSession = Depends(get_current_session),
-    db: Session = Depends(get_db),
 ) -> SessionStatus:
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
         set_session_cookie(response, token)
-    profile = UserProfile.get(session.user_id, db)
-    return _session_status(session, profile)
+    return _session_status(session)
 
 
 @session_router.patch(
@@ -110,12 +110,12 @@ def get_session_status(
     response_model=PublicProfile,
 )
 def update_profile(
-    payload: UserUpdate,
+    payload: SessionProfileUpdate,
     session: AnonymousSession = Depends(get_current_session),
     db: Session = Depends(get_db),
 ) -> PublicProfile:
-    profile = UserProfile.update(session.user_id, payload, db)
-    return _public_profile(profile)
+    session = update_session_profile(session, payload, db)
+    return _public_profile(session)
 
 
 @session_router.get(
@@ -124,14 +124,10 @@ def update_profile(
 )
 async def get_conversation(
     session: AnonymousSession = Depends(get_current_session),
-    db: Session = Depends(get_db),
     rag: PolicyRagGraph = Depends(get_rag_graph),
 ) -> ConversationSnapshot:
-    conversation = db.get(ConversationThread, session.user_id)
-    if not conversation:
-        return ConversationSnapshot()
     return ConversationSnapshot.model_validate(
-        await rag.get_conversation(conversation.thread_id)
+        await rag.get_conversation(session.thread_id)
     )
 
 
@@ -139,22 +135,19 @@ async def get_conversation(
 async def stream_session_answer(
     payload: WebChatRequest,
     session: AnonymousSession = Depends(get_current_session),
-    db: Session = Depends(get_db),
     rag: PolicyRagGraph = Depends(get_rag_graph),
     langfeather_runtime: LangFeatherRuntime = Depends(get_langfeather_runtime),
 ) -> StreamingResponse:
     try:
-        profile = UserProfile.get(session.user_id, db)
-        rag_user_profile = profile.model_dump(
-            include={"age", "gender", "job", "income", "region"}
+        rag_user_profile = session.model_dump(
+            include=PROFILE_FIELD_NAMES
         )
-        thread_id = ConversationThread.get_thread_id(session.user_id, db)
         trace_id = langfeather_runtime.create_trace_id()
         generator = rag.stream_answer(
             user_profile=rag_user_profile,
             user_input=payload.user_input,
             exclude_expired=payload.exclude_expired,
-            thread_id=thread_id,
+            thread_id=session.thread_id,
             trace_id=trace_id,
             trace_metadata=langfeather_runtime.trace_metadata(trace_id),
         )
@@ -191,7 +184,7 @@ def submit_user_feedback(
                 helpful=payload.helpful,
                 reason=payload.reason,
                 comment=payload.comment,
-                anonymous_user_id=session.user_id,
+                anonymous_user_id=session.thread_id,
             )
             recorded = True
         except RuntimeError as error:
@@ -211,13 +204,8 @@ def delete_conversation(
     db: Session = Depends(get_db),
     rag: PolicyRagGraph = Depends(get_rag_graph),
 ) -> dict[str, str]:
-    old_thread_id, _ = ConversationThread.reset_thread_id(
-        session.user_id,
-        db,
-    )
+    old_thread_id = reset_conversation(session, db)
     rag.delete_conversation(old_thread_id)
-    if old_thread_id != session.user_id:
-        rag.delete_conversation(session.user_id)
     return {"message": "대화 기록 삭제 완료"}
 
 
