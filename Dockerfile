@@ -2,10 +2,13 @@ FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 
 WORKDIR /app
 
+# Fix the container timezone to KST: policy deadline filters are computed
+# against date.today(), and UTC would shift the baseline day during 00:00-09:00 KST.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    TZ=Asia/Seoul
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
