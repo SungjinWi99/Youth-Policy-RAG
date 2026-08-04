@@ -2,6 +2,8 @@ import re
 from datetime import datetime
 from typing import Any, Literal, get_args
 
+from langchain_core.documents import Document
+
 
 ROLLING_APPLICATION_PERIOD_CODE = "0057002"
 APPLICATION_PERIOD_PATTERN = re.compile(
@@ -289,3 +291,88 @@ POLICY_METADATA_LABELS: dict[str, str] = {
 def get_policy_metadata_label(key: str) -> str:
     """등록된 한글 표시명을 반환하고, 알 수 없는 키는 원문 키를 유지한다."""
     return POLICY_METADATA_LABELS.get(key, key)
+
+
+def to_policy_end_date(value: Any) -> int:
+    normalized = str(value or "").strip()
+    if len(normalized) == 8 and normalized.isdigit():
+        return int(normalized)
+    return 99991231
+
+
+def build_documents(
+    policies: list[dict[str, Any]],
+) -> tuple[list[Document], list[str]]:
+    documents = []
+    ids = []
+
+    for item in policies:
+        policy_id = str(item["plcyNo"]).strip()
+        content = f"""
+정책명: {item.get("plcyNm", "")}
+키워드: {item.get("plcyKywdNm", "")}
+카테고리: {item.get("lclsfNm", "")} > {item.get("mclsfNm", "")}
+정책 설명: {item.get("plcyExplnCn", "")}
+지원 내용: {item.get("plcySprtCn", "")}
+기타 사항: {item.get("etcMttrCn", "")}
+""".strip()
+
+        metadata = {
+            "plcyNo": policy_id,
+            "lclsfNm": str(item.get("lclsfNm") or ""),
+            "mclsfNm": str(item.get("mclsfNm") or ""),
+            "refUrlAddr1": str(item.get("refUrlAddr1") or ""),
+            "refUrlAddr2": str(item.get("refUrlAddr2") or ""),
+            "aplyUrlAddr": str(item.get("aplyUrlAddr") or ""),
+            "sprvsnInstCdNm": str(item.get("sprvsnInstCdNm") or ""),
+            "operInstCdNm": str(item.get("operInstCdNm") or ""),
+            "bizPrdBgngYmd": str(item.get("bizPrdBgngYmd") or ""),
+            "bizPrdEndYmd": to_policy_end_date(item.get("bizPrdEndYmd")),
+            "bizPrdEtcCn": str(item.get("bizPrdEtcCn") or ""),
+            "aplyYmd": str(item.get("aplyYmd") or ""),
+            "plcyAplyMthdCn": str(item.get("plcyAplyMthdCn") or ""),
+            "ptcpPrpTrgtCn": str(item.get("ptcpPrpTrgtCn") or ""),
+            "addAplyQlfcCndCn": str(
+                item.get("addAplyQlfcCndCn") or ""
+            ),
+            "sbmsnDcmntCn": str(item.get("sbmsnDcmntCn") or ""),
+            "srngMthdCn": str(item.get("srngMthdCn") or ""),
+            "registrationInstitution": str(
+                item.get("rgtrInstCdNm") or ""
+            ),
+            "zipCd": str(item.get("zipCd") or ""),
+            "jobCd": str(item.get("jobCd") or ""),
+            "mrgSttsCd": str(item.get("mrgSttsCd") or ""),
+            "sprtSclLmtYn": str(item.get("sprtSclLmtYn") or ""),
+            "sprtSclCnt": str(item.get("sprtSclCnt") or ""),
+            "sprtArvlSeqYn": str(item.get("sprtArvlSeqYn") or ""),
+        }
+        metadata.update(
+            build_age_metadata(
+                item.get("sprtTrgtMinAge"),
+                item.get("sprtTrgtMaxAge"),
+            )
+        )
+        metadata.update(
+            build_income_metadata(
+                item.get("earnMinAmt"),
+                item.get("earnMaxAmt"),
+            )
+        )
+        metadata.update(
+            build_application_period_metadata(
+                item.get("aplyYmd"),
+                item.get("aplyPrdSeCd"),
+            )
+        )
+        metadata.update(build_region_metadata(item.get("zipCd")))
+
+        documents.append(
+            Document(
+                page_content=content,
+                metadata=metadata,
+            )
+        )
+        ids.append(policy_id)
+
+    return documents, ids

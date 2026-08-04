@@ -5,9 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import time
 from pathlib import Path
-from typing import Any
 
 import chromadb
 from dotenv import load_dotenv
@@ -18,19 +16,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.ingest_chroma import (
-    DEFAULT_BATCH_SIZE,
-    DEFAULT_OLLAMA_BASE_URL,
-    build_documents,
-    create_passage_embedding_model,
-)
 from src.config import load_config
-from src.factory import verify_embedding_consistency
+from src.factory import DEFAULT_OLLAMA_BASE_URL, create_passage_embedding_model
 from src.policy.corpus import (
     find_new_policies,
     load_policy_snapshot,
     policy_id,
-    write_policy_snapshot_atomically,
 )
 from src.policy.source import (
     DEFAULT_MAX_ATTEMPTS,
@@ -40,85 +31,10 @@ from src.policy.source import (
     DEFAULT_TIMEOUT,
     fetch_policies,
 )
+from src.policy.store import apply_incremental_update
 
 
-def get_collection_ids(collection: Any) -> set[str]:
-    result = collection.get(include=[])
-    return {str(item_id) for item_id in result.get("ids", [])}
-
-
-def ensure_collection_matches_raw(
-    collection: Any,
-    existing_policies: list[dict[str, Any]],
-) -> None:
-    raw_ids = {policy_id(item) for item in existing_policies}
-    collection_ids = get_collection_ids(collection)
-    if raw_ids == collection_ids:
-        return
-
-    only_raw = sorted(raw_ids - collection_ids)
-    only_chroma = sorted(collection_ids - raw_ids)
-    raise RuntimeError(
-        "증분 반영 전 원본 JSON과 Chroma의 정책 ID가 일치해야 합니다. "
-        f"raw_only={len(only_raw)} {only_raw[:5]}, "
-        f"chroma_only={len(only_chroma)} {only_chroma[:5]}"
-    )
-
-
-def apply_incremental_update(
-    *,
-    raw_path: Path,
-    existing_policies: list[dict[str, Any]],
-    new_policies: list[dict[str, Any]],
-    vector_store: Chroma,
-    batch_size: int,
-    sleep_seconds: float,
-    provider: str,
-    passage_model: str,
-) -> None:
-    ensure_collection_matches_raw(
-        vector_store._collection,
-        existing_policies,
-    )
-    # 적재 전에 막아야 한다. 여기를 통과시키면 잘못된 모델로 만든 벡터가
-    # 정상 인덱스 안에 섞여 들어가고, 되돌릴 방법이 없다(ISSUE-002).
-    verify_embedding_consistency(
-        vector_store,
-        provider=provider,
-        passage_model=passage_model,
-    )
-    documents, new_ids = build_documents(new_policies)
-    original_count = len(existing_policies)
-
-    try:
-        for start in range(0, len(documents), batch_size):
-            end = start + batch_size
-            vector_store.add_documents(
-                documents=documents[start:end],
-                ids=new_ids[start:end],
-            )
-            print(
-                f"Chroma 적재: {min(end, len(documents))}/"
-                f"{len(documents)}"
-            )
-            if end < len(documents) and sleep_seconds > 0:
-                time.sleep(sleep_seconds)
-
-        expected_count = original_count + len(new_policies)
-        stored_count = vector_store._collection.count()
-        if stored_count != expected_count:
-            raise RuntimeError(
-                f"Chroma 적재 건수가 일치하지 않습니다: "
-                f"expected={expected_count}, stored={stored_count}"
-            )
-        write_policy_snapshot_atomically(
-            raw_path,
-            [*existing_policies, *new_policies],
-        )
-    except BaseException:
-        # 신규 ID는 사전 검증 시 Chroma에 없었으므로 모두 삭제해도 안전하다.
-        vector_store._collection.delete(ids=new_ids)
-        raise
+DEFAULT_BATCH_SIZE = 270
 
 
 def parse_args(

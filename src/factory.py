@@ -74,6 +74,24 @@ def create_embedding_model(provider: str, model_name: str, **kwargs):
     return model_class(model=model_name, **kwargs)
 
 
+DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
+
+
+def create_passage_embedding_model(
+    provider: str,
+    model_name: str,
+    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
+):
+    kwargs = {}
+    if provider == "ollama":
+        kwargs["base_url"] = ollama_base_url
+    return create_embedding_model(
+        provider=provider,
+        model_name=model_name,
+        **kwargs,
+    )
+
+
 EMBEDDING_PROVIDER_KEY = "embedding_provider"
 EMBEDDING_PASSAGE_MODEL_KEY = "embedding_passage_model"
 

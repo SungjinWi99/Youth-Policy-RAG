@@ -1,204 +1,29 @@
 import argparse
-import os
 import sys
-import time
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-import chromadb
 from dotenv import load_dotenv
-from langchain_chroma import Chroma
-from langchain_core.documents import Document
-from tqdm import tqdm
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.factory import (
-    EMBEDDING_PASSAGE_MODEL_KEY,
-    EMBEDDING_PROVIDER_KEY,
-    create_embedding_model,
-)
+from src.factory import DEFAULT_OLLAMA_BASE_URL, create_passage_embedding_model
 from src.policy.corpus import load_policy_snapshot
-from src.policy.utils import (
-    build_age_metadata,
-    build_application_period_metadata,
-    build_income_metadata,
-    build_region_metadata
-)
+from src.policy.store import ingest_documents, prepare_vector_store
+from src.policy.utils import build_documents
 
 
 DEFAULT_RAW_PATH = PROJECT_ROOT / "data/raw/youth_policies.json"
 DEFAULT_COLLECTION_NAME = "youth_policies_rag"
 DEFAULT_BATCH_SIZE = 270
-DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
 
 
 def project_path(path: Path) -> Path:
     if path.is_absolute():
         return path
     return (PROJECT_ROOT / path).resolve()
-
-
-def to_policy_end_date(value: Any) -> int:
-    normalized = str(value or "").strip()
-    if len(normalized) == 8 and normalized.isdigit():
-        return int(normalized)
-    return 99991231
-
-
-def build_documents(
-    policies: list[dict[str, Any]],
-) -> tuple[list[Document], list[str]]:
-    documents = []
-    ids = []
-
-    for item in policies:
-        policy_id = str(item["plcyNo"]).strip()
-        content = f"""
-정책명: {item.get("plcyNm", "")}
-키워드: {item.get("plcyKywdNm", "")}
-카테고리: {item.get("lclsfNm", "")} > {item.get("mclsfNm", "")}
-정책 설명: {item.get("plcyExplnCn", "")}
-지원 내용: {item.get("plcySprtCn", "")}
-기타 사항: {item.get("etcMttrCn", "")}
-""".strip()
-
-        metadata = {
-            "plcyNo": policy_id,
-            "lclsfNm": str(item.get("lclsfNm") or ""),
-            "mclsfNm": str(item.get("mclsfNm") or ""),
-            "refUrlAddr1": str(item.get("refUrlAddr1") or ""),
-            "refUrlAddr2": str(item.get("refUrlAddr2") or ""),
-            "aplyUrlAddr": str(item.get("aplyUrlAddr") or ""),
-            "sprvsnInstCdNm": str(item.get("sprvsnInstCdNm") or ""),
-            "operInstCdNm": str(item.get("operInstCdNm") or ""),
-            "bizPrdBgngYmd": str(item.get("bizPrdBgngYmd") or ""),
-            "bizPrdEndYmd": to_policy_end_date(item.get("bizPrdEndYmd")),
-            "bizPrdEtcCn": str(item.get("bizPrdEtcCn") or ""),
-            "aplyYmd": str(item.get("aplyYmd") or ""),
-            "plcyAplyMthdCn": str(item.get("plcyAplyMthdCn") or ""),
-            "ptcpPrpTrgtCn": str(item.get("ptcpPrpTrgtCn") or ""),
-            "addAplyQlfcCndCn": str(
-                item.get("addAplyQlfcCndCn") or ""
-            ),
-            "sbmsnDcmntCn": str(item.get("sbmsnDcmntCn") or ""),
-            "srngMthdCn": str(item.get("srngMthdCn") or ""),
-            "registrationInstitution": str(
-                item.get("rgtrInstCdNm") or ""
-            ),
-            "zipCd": str(item.get("zipCd") or ""),
-            "jobCd": str(item.get("jobCd") or ""),
-            "mrgSttsCd": str(item.get("mrgSttsCd") or ""),
-            "sprtSclLmtYn": str(item.get("sprtSclLmtYn") or ""),
-            "sprtSclCnt": str(item.get("sprtSclCnt") or ""),
-            "sprtArvlSeqYn": str(item.get("sprtArvlSeqYn") or ""),
-        }
-        metadata.update(
-            build_age_metadata(
-                item.get("sprtTrgtMinAge"),
-                item.get("sprtTrgtMaxAge"),
-            )
-        )
-        metadata.update(
-            build_income_metadata(
-                item.get("earnMinAmt"),
-                item.get("earnMaxAmt"),
-            )
-        )
-        metadata.update(
-            build_application_period_metadata(
-                item.get("aplyYmd"),
-                item.get("aplyPrdSeCd"),
-            )
-        )
-        metadata.update(build_region_metadata(item.get("zipCd")))
-
-        documents.append(
-            Document(
-                page_content=content,
-                metadata=metadata,
-            )
-        )
-        ids.append(policy_id)
-
-    return documents, ids
-
-
-def create_passage_embedding_model(
-    provider: str,
-    model_name: str,
-    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
-):
-    kwargs = {}
-    if provider == "ollama":
-        kwargs["base_url"] = ollama_base_url
-    return create_embedding_model(
-        provider=provider,
-        model_name=model_name,
-        **kwargs,
-    )
-
-
-def prepare_vector_store(
-    chroma_dir: Path,
-    collection_name: str,
-    embedding_model: Any,
-    distance_metric: str,
-    recreate: bool,
-    provider: str,
-    passage_model: str,
-) -> Chroma:
-    chroma_dir.mkdir(parents=True, exist_ok=True)
-    client = chromadb.PersistentClient(path=str(chroma_dir))
-    existing_names = {
-        collection.name
-        for collection in client.list_collections()
-    }
-    if collection_name in existing_names:
-        if not recreate:
-            raise FileExistsError(
-                f"{chroma_dir}에 collection '{collection_name}'이 이미 "
-                "존재합니다. 다시 만들려면 --recreate를 사용하세요."
-            )
-        client.delete_collection(collection_name)
-
-    return Chroma(
-        collection_name=collection_name,
-        embedding_function=embedding_model,
-        persist_directory=str(chroma_dir),
-        # 어떤 조합으로 적재했는지 컬렉션에 남긴다. 이 값이 없으면 차원이 같은
-        # 다른 모델로 서빙해도 오류 없이 무의미한 검색 결과가 나온다(ISSUE-002).
-        collection_metadata={
-            "hnsw:space": distance_metric,
-            EMBEDDING_PROVIDER_KEY: provider,
-            EMBEDDING_PASSAGE_MODEL_KEY: passage_model,
-            "ingested_at": datetime.now(timezone.utc).isoformat(),
-        },
-    )
-
-
-def ingest_documents(
-    vector_store: Chroma,
-    documents: list[Document],
-    ids: list[str],
-    batch_size: int,
-    sleep_seconds: float,
-) -> None:
-    for start in tqdm(
-        range(0, len(documents), batch_size),
-        desc="Chroma 적재",
-    ):
-        end = start + batch_size
-        vector_store.add_documents(
-            documents=documents[start:end],
-            ids=ids[start:end],
-        )
-        if end < len(documents) and sleep_seconds > 0:
-            time.sleep(sleep_seconds)
 
 
 def parse_args(
