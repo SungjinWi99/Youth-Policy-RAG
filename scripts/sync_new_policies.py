@@ -25,6 +25,7 @@ from scripts.ingest_chroma import (
     create_passage_embedding_model,
 )
 from src.config import load_config
+from src.factory import verify_embedding_consistency
 from src.policy.corpus import (
     find_new_policies,
     load_policy_snapshot,
@@ -72,10 +73,19 @@ def apply_incremental_update(
     vector_store: Chroma,
     batch_size: int,
     sleep_seconds: float,
+    provider: str,
+    passage_model: str,
 ) -> None:
     ensure_collection_matches_raw(
         vector_store._collection,
         existing_policies,
+    )
+    # 적재 전에 막아야 한다. 여기를 통과시키면 잘못된 모델로 만든 벡터가
+    # 정상 인덱스 안에 섞여 들어가고, 되돌릴 방법이 없다(ISSUE-002).
+    verify_embedding_consistency(
+        vector_store,
+        provider=provider,
+        passage_model=passage_model,
     )
     documents, new_ids = build_documents(new_policies)
     original_count = len(existing_policies)
@@ -283,6 +293,8 @@ def main() -> None:
         vector_store=vector_store,
         batch_size=args.batch_size,
         sleep_seconds=args.sleep_seconds,
+        provider=provider,
+        passage_model=model_name,
     )
     final_count = vector_store._collection.count()
     print(

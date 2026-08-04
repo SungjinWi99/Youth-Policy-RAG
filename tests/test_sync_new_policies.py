@@ -162,8 +162,9 @@ def test_find_new_policies_preserves_api_order():
 
 
 class FakeCollection:
-    def __init__(self, ids):
+    def __init__(self, ids, metadata=None):
         self.ids = list(ids)
+        self.metadata = dict(metadata or {})
 
     def get(self, include):
         assert include == []
@@ -178,8 +179,8 @@ class FakeCollection:
 
 
 class FakeVectorStore:
-    def __init__(self, ids, *, fail=False):
-        self._collection = FakeCollection(ids)
+    def __init__(self, ids, *, fail=False, metadata=None):
+        self._collection = FakeCollection(ids, metadata)
         self.fail = fail
 
     def add_documents(self, documents, ids):
@@ -204,6 +205,8 @@ def test_apply_incremental_update_updates_chroma_and_raw(tmp_path):
         vector_store=vector_store,
         batch_size=100,
         sleep_seconds=0,
+        provider="upstage",
+        passage_model="solar-embedding-1-large-passage",
     )
 
     assert vector_store._collection.ids == ["P1", "P2"]
@@ -227,6 +230,38 @@ def test_apply_incremental_update_rolls_back_chroma_on_failure(tmp_path):
             vector_store=vector_store,
             batch_size=100,
             sleep_seconds=0,
+            provider="upstage",
+            passage_model="solar-embedding-1-large-passage",
+        )
+
+    assert vector_store._collection.ids == ["P1"]
+    assert json.loads(raw_path.read_text(encoding="utf-8")) == existing
+
+
+def test_apply_incremental_update_refuses_mismatched_embedding_model(tmp_path):
+    # 잘못된 모델로 만든 벡터가 정상 인덱스에 섞이면 되돌릴 수 없다.
+    # 적재를 시작하기 전에 거부해야 한다.
+    raw_path = tmp_path / "policies.json"
+    existing = [{"plcyNo": "P1"}]
+    raw_path.write_text(json.dumps(existing), encoding="utf-8")
+    vector_store = FakeVectorStore(
+        ["P1"],
+        metadata={
+            "embedding_provider": "upstage",
+            "embedding_passage_model": "solar-embedding-1-large-passage",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="일치하지 않습니다"):
+        apply_incremental_update(
+            raw_path=raw_path,
+            existing_policies=existing,
+            new_policies=[{"plcyNo": "P2"}],
+            vector_store=vector_store,
+            batch_size=100,
+            sleep_seconds=0,
+            provider="ollama",
+            passage_model="qwen3-embedding",
         )
 
     assert vector_store._collection.ids == ["P1"]

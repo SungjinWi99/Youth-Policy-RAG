@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.factory import create_embedding_model
+from src.factory import (
+    EMBEDDING_PASSAGE_MODEL_KEY,
+    EMBEDDING_PROVIDER_KEY,
+    create_embedding_model,
+)
 from src.policy.corpus import load_policy_snapshot
 from src.policy.utils import (
     build_age_metadata,
@@ -144,6 +149,8 @@ def prepare_vector_store(
     embedding_model: Any,
     distance_metric: str,
     recreate: bool,
+    provider: str,
+    passage_model: str,
 ) -> Chroma:
     chroma_dir.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(chroma_dir))
@@ -163,7 +170,14 @@ def prepare_vector_store(
         collection_name=collection_name,
         embedding_function=embedding_model,
         persist_directory=str(chroma_dir),
-        collection_metadata={"hnsw:space": distance_metric},
+        # 어떤 조합으로 적재했는지 컬렉션에 남긴다. 이 값이 없으면 차원이 같은
+        # 다른 모델로 서빙해도 오류 없이 무의미한 검색 결과가 나온다(ISSUE-002).
+        collection_metadata={
+            "hnsw:space": distance_metric,
+            EMBEDDING_PROVIDER_KEY: provider,
+            EMBEDDING_PASSAGE_MODEL_KEY: passage_model,
+            "ingested_at": datetime.now(timezone.utc).isoformat(),
+        },
     )
 
 
@@ -274,6 +288,8 @@ def main() -> None:
         embedding_model=embedding_model,
         distance_metric=args.distance_metric,
         recreate=args.recreate,
+        provider=args.provider,
+        passage_model=args.model,
     )
     ingest_documents(
         vector_store=vector_store,

@@ -1,3 +1,5 @@
+import logging
+
 from langchain_chroma import Chroma
 from langchain_google_genai import (
     ChatGoogleGenerativeAI,
@@ -24,6 +26,8 @@ from src.rag.retrievers import (
     DensePolicyRetriever,
     EnsemblePolicyRetriever,
 )
+
+logger = logging.getLogger(__name__)
 
 CHAT_MODEL_CLASSES = {
     "google": ChatGoogleGenerativeAI,
@@ -70,6 +74,47 @@ def create_embedding_model(provider: str, model_name: str, **kwargs):
     return model_class(model=model_name, **kwargs)
 
 
+EMBEDDING_PROVIDER_KEY = "embedding_provider"
+EMBEDDING_PASSAGE_MODEL_KEY = "embedding_passage_model"
+
+
+def verify_embedding_consistency(
+    vector_store,
+    *,
+    provider: str,
+    passage_model: str,
+) -> None:
+
+    collection = getattr(vector_store, "_collection", None)
+    if collection is None:
+        logger.warning(
+            "Chroma 내부 컬렉션에 접근할 수 없어 임베딩 정합성 검증을 스킵합니다."
+        )
+        return
+
+    metadata = getattr(collection, "metadata", None) or {}
+    recorded_provider = metadata.get(EMBEDDING_PROVIDER_KEY)
+    recorded_model = metadata.get(EMBEDDING_PASSAGE_MODEL_KEY)
+    if not recorded_provider or not recorded_model:
+        logger.warning(
+            "적재 정보가 없는 레거시 Chroma 인덱스입니다. 현재 설정"
+            "(provider=%s, passage_model=%s)과 실제 적재 조합이 같은지 "
+            "검증할 수 없습니다.",
+            provider,
+            passage_model,
+        )
+        return
+
+    if recorded_provider != provider or recorded_model != passage_model:
+        raise RuntimeError(
+            "임베딩 조합이 Chroma 인덱스와 일치하지 않습니다: "
+            f"인덱스={recorded_provider}/{recorded_model}, "
+            f"설정={provider}/{passage_model}. "
+            "config.yaml의 retriever.provider·retriever.passage_model과 "
+            "data.chroma_dir이 같은 적재를 가리키는지 확인하세요."
+        )
+
+
 def build_rag_graph(
     config: AppConfig,
 ) -> PolicyRagGraph:
@@ -81,6 +126,11 @@ def build_rag_graph(
         collection_name=config.data.chroma_collection_name,
         persist_directory=config.path(config.data.chroma_dir),
         embedding_function=embeddings,
+    )
+    verify_embedding_consistency(
+        vector_store,
+        provider=config.retriever.provider,
+        passage_model=config.retriever.passage_model,
     )
     dense_retriever = DensePolicyRetriever(
         vector_store=vector_store,

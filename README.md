@@ -94,7 +94,7 @@ flowchart LR
 │   ├── dependencies.py            # FastAPI dependencies
 │   ├── eval.py                    # 평가 데이터 검증 및 evaluator
 │   ├── checkpointer.py            # SQLite LangGraph checkpointer
-│   └── factory.py                 # 모델·RAG factory
+│   └── factory.py                 # 모델·RAG factory, 임베딩 정합성 검증
 └── tests/
 ```
 
