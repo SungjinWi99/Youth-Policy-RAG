@@ -115,9 +115,10 @@ uv run uvicorn main:app --reload
 
 ## Docker Compose 실행
 
-로컬 Compose는 형제 디렉터리 `../langfeather`의 SDK를 API 이미지에 포함합니다.
-collector/UI는 LangFeather 프로젝트에서 별도로 실행하며, API 추적은 기본으로
-활성화됩니다. 대시보드는 `http://127.0.0.1:4319`에서 확인합니다. LangFeather를 잠시 끄려면
+`langfeather` PyPI 패키지를 API 이미지가 그대로 포함하고, collector는 같은
+Compose 프로젝트의 `langfeather` 서비스로 함께 뜹니다 (API 컨테이너와 네트워크
+네임스페이스를 공유). API 추적은 기본으로 활성화되며, 대시보드는
+`http://127.0.0.1:4319`에서 확인합니다. LangFeather를 잠시 끄려면
 `LANGFEATHER_TRACING=false docker compose up -d --build`를 사용합니다.
 
 FastAPI와 Next.js를 각각 컨테이너로 실행합니다. 브라우저에는 Next.js의
