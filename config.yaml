@@ -41,4 +41,4 @@ evaluation:
   max_concurrency: 3
 
 database:
-  echo: true
+  echo: false
