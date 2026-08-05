@@ -1312,11 +1312,11 @@ wheels = [
 
 [[package]]
 name = "langfeather"
-version = "0.2.0"
+version = "0.3.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/af/1d/f9690c5bbcc44b5a230cb7800aad5219999da793c12794568280e405f593/langfeather-0.2.0.tar.gz", hash = "sha256:aea70f49f97341b399f60f2aba0a257791e8198dd15932f13deedc72c6b96ad4", size = 44211, upload-time = "2026-07-30T12:14:43.59Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/73/fe/40ca4b9224b723f6e5e8a3f9603f41a2a46cf4f89c6249f9a285b98937d1/langfeather-0.3.2.tar.gz", hash = "sha256:5826eabbb9ee998f122d9028d988d8329d9872d2969e69eba316492a604bb053", size = 47412, upload-time = "2026-08-04T00:56:04.126Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1a/68/3d1444875ab1d5c0b6182a5e46331af45edc4baf8f9d61cf7c757cf97a06/langfeather-0.2.0-py3-none-any.whl", hash = "sha256:a4d6eaaf7950c00ad38134a2079485558da39fb154a9a339e97257534e228da5", size = 41524, upload-time = "2026-07-30T12:14:42.455Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/ac/2a4db2c5a582d1ff7e40495b8b543ff8b7f5bc40a74392765d5e4582406a/langfeather-0.3.2-py3-none-any.whl", hash = "sha256:f2aebe919805e77e4028703c1b970a35cbc6df1620548c31afda036bdd9214e1", size = 44476, upload-time = "2026-08-04T00:56:02.882Z" },
 ]
 
 [package.optional-dependencies]
@@ -2900,7 +2900,7 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -2959,7 +2959,7 @@ resolution-markers = [
     "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz", hash = "sha256:67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378", size = 30774447, upload-time = "2026-06-19T15:01:43.456Z" }
 wheels = [
@@ -3695,7 +3695,7 @@ requires-dist = [
     { name = "langchain-ollama", specifier = ">=1.0.0" },
     { name = "langchain-openai", specifier = ">=1.0.0" },
     { name = "langchain-upstage", specifier = ">=0.7.0" },
-    { name = "langfeather", extras = ["langchain"], specifier = ">=0.2.0,<0.3" },
+    { name = "langfeather", extras = ["langchain"], specifier = ">=0.3.2,<0.4" },
     { name = "langgraph", specifier = ">=1.1.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
