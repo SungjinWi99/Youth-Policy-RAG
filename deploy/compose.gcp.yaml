@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
 
   langfeather:
-    image: ghcr.io/sungjinwi99/langfeather:0.2.0
+    image: ghcr.io/sungjinwi99/langfeather:0.3.2
     network_mode: "service:api"
     volumes:
       - ${LANGFEATHER_DATA_DIR:-/opt/youth-policy-rag/langfeather-data}:/data
