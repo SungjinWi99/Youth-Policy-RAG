@@ -5,6 +5,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
 from datetime import date
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from kiwipiepy import Kiwi
 from langchain_core.documents import Document
@@ -15,6 +16,11 @@ from src.rag.retrievers.filter import build_filter_from_profile
 
 TOKEN_PATTERN = re.compile(r"[0-9a-zA-Z]+|[가-힣]+")
 KIWI_CONTENT_TAGS = frozenset({"NNG", "NNP", "VV", "VA", "VX", "XR", "SL", "SH", "SN"})
+
+# 정책 동기화는 하루 한 번(새벽 배치) 수준으로 드물다. 이 주기는 그 변경을
+# 놓치지 않을 정도로만 짧으면 되고, stat() 호출 자체가 가벼워 더 짧게 잡아도
+# 비용 차이가 없다.
+BM25_REFRESH_POLL_SECONDS = 5 * 60
 
 
 def tokenize_korean_legacy(text: str) -> list[str]:
@@ -187,12 +193,24 @@ class BM25PolicyRetriever:
         if search_k < 1:
             raise ValueError("search_k는 1 이상이어야 합니다.")
         self.collection = collection
+        self.tokenizer = tokenizer
         self.index = BM25DocumentIndex(
             load_chroma_documents(collection),
             tokenizer=tokenizer,
         )
         self.search_k = search_k
         self.today_provider = today_provider
+
+    def refresh(self) -> None:
+        """Chroma 컬렉션을 다시 읽어 인덱스를 새로 만든다.
+
+        새 인덱스를 다 만든 뒤 self.index에 한 번에 대입하므로, 이미 진행 중인
+        검색은 갱신 전 인덱스로 끝까지 끝나고 그 다음 검색부터 새 인덱스를 본다.
+        """
+        self.index = BM25DocumentIndex(
+            load_chroma_documents(self.collection),
+            tokenizer=self.tokenizer,
+        )
 
     def _eligible_policy_ids(self, request: RetrievalRequest) -> set[str]:
         metadata_filter = build_filter_from_profile(
@@ -217,3 +235,21 @@ class BM25PolicyRetriever:
 
     async def aretrieve(self, request: RetrievalRequest) -> list[Document]:
         return await asyncio.to_thread(self.retrieve, request)
+
+
+async def run_bm25_refresh(
+    bm25_retriever: BM25PolicyRetriever,
+    raw_path: Path,
+    poll_seconds: float = BM25_REFRESH_POLL_SECONDS,
+) -> None:
+    """raw_path의 mtime을 폴링하다가 바뀌면 BM25 인덱스를 재구성.
+    """
+    last_mtime = raw_path.stat().st_mtime if raw_path.exists() else None
+    while True:
+        await asyncio.sleep(poll_seconds)
+        if not raw_path.exists():
+            continue
+        mtime = raw_path.stat().st_mtime
+        if mtime != last_mtime:
+            await asyncio.to_thread(bm25_retriever.refresh)
+            last_mtime = mtime

@@ -158,6 +158,7 @@ def build_rag_graph(
             else config.retriever.search_k
         ),
     )
+    bm25_retriever = None
     if config.retriever.mode == "hybrid":
         bm25_retriever = BM25PolicyRetriever(
             collection=vector_store,
@@ -196,4 +197,5 @@ def build_rag_graph(
         ),
         checkpointer=checkpointer,
         max_retrieval_retries=config.rag.policy_checker.max_retries,
+        bm25_retriever=bm25_retriever,
     )

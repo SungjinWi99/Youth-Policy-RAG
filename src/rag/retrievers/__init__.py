@@ -3,6 +3,7 @@ from src.rag.retrievers.bm25_retriever import (
     BM25DocumentIndex,
     BM25PolicyRetriever,
     load_chroma_documents,
+    run_bm25_refresh,
     tokenize_korean_legacy,
     tokenize_korean_lexical,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "add_policy_exclusion",
     "build_filter_from_profile",
     "load_chroma_documents",
+    "run_bm25_refresh",
     "tokenize_korean_legacy",
     "tokenize_korean_lexical",
 ]

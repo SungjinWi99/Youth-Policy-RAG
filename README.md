@@ -268,8 +268,10 @@ API 응답을 정답으로 삼아 신규 정책 추가, 내용이 바뀐 정책 
 다시 세워 남은 작업만 마저 반영합니다.
 
 설정을 따로 지정하지 않으면 `config.yaml`의 원본 경로, Chroma 경로·컬렉션,
-`retriever.provider`, `retriever.passage_model`을 사용합니다. 실행 중인 API
-서버가 있다면 동기화 후 재시작해야 메모리의 BM25 인덱스에도 반영됩니다.
+`retriever.provider`, `retriever.passage_model`을 사용합니다. hybrid 모드에서는
+API 서버가 원본 JSON의 mtime 변경을 감지해 BM25 인덱스를 자동으로 다시
+빌드하므로(`run_bm25_refresh`, 최대 5분 지연) 동기화 후 서버를 재시작할
+필요가 없습니다.
 
 ### 2. Chroma 적재
 

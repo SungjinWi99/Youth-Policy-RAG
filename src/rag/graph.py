@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Overwrite, Send
 
 from src.checkpointer import AsyncCompatibleSqliteSaver
+from src.rag.retrievers import BM25PolicyRetriever
 from src.rag.state import (
     RAGGraphInput,
     RAGGraphOutput,
@@ -31,6 +32,7 @@ class PolicyRagGraph:
         answer_generator: Runnable,
         checkpointer: AsyncCompatibleSqliteSaver,
         max_retrieval_retries: int = 3,
+        bm25_retriever: BM25PolicyRetriever | None = None,
     ):
         if max_retrieval_retries < 0:
             raise ValueError("max_retrieval_retries는 0 이상이어야 합니다.")
@@ -41,6 +43,9 @@ class PolicyRagGraph:
         self.answer_generator = answer_generator
         self.checkpointer = checkpointer
         self.max_retrieval_retries = max_retrieval_retries
+        # hybrid 모드에서만 존재. main.py가 이 참조로 백그라운드 새로고침
+        # 태스크를 띄운다(run_bm25_refresh).
+        self.bm25_retriever = bm25_retriever
         self.graph = self._compile_graph()
 
     def _compile_graph(self):

@@ -1,4 +1,6 @@
 import asyncio
+import os
+from contextlib import suppress
 from datetime import date
 
 from langchain_core.documents import Document
@@ -11,6 +13,7 @@ from src.rag.retrievers import (
     RetrievalRequest,
     add_policy_exclusion,
     build_filter_from_profile,
+    run_bm25_refresh,
     tokenize_korean_legacy,
     tokenize_korean_lexical,
 )
@@ -51,6 +54,23 @@ class FakeCollection:
                 "metadatas": [{"plcyNo": "POLICY"}],
             }
         return {"ids": ["POLICY"]}
+
+
+class MutableFakeCollection:
+    """policy_id -> content 매핑을 나중에 바꿔 refresh() 대상 변화를 흉내낸다."""
+
+    def __init__(self, policies: dict[str, str]):
+        self.policies = policies
+
+    def get(self, **kwargs):
+        ids = list(self.policies)
+        if kwargs.get("include") == ["documents", "metadatas"]:
+            return {
+                "ids": ids,
+                "documents": [self.policies[policy_id] for policy_id in ids],
+                "metadatas": [{"plcyNo": policy_id} for policy_id in ids],
+            }
+        return {"ids": ids}
 
 
 class FakeVectorRetriever:
@@ -373,3 +393,44 @@ def test_ensemble_rejects_mismatched_retrievers_and_weights():
         assert "길이" in str(error)
     else:
         raise AssertionError("ValueError가 필요합니다.")
+
+
+def test_bm25_retriever_refresh_rebuilds_index_from_collection():
+    collection = MutableFakeCollection({"POLICY": "청년 월세 지원"})
+    retriever = BM25PolicyRetriever(collection=collection, search_k=3)
+    assert set(retriever.index.documents) == {"POLICY"}
+
+    collection.policies["POLICY2"] = "청년 창업 지원"
+    retriever.refresh()
+
+    assert set(retriever.index.documents) == {"POLICY", "POLICY2"}
+
+
+def test_run_bm25_refresh_rebuilds_when_raw_path_mtime_changes(tmp_path):
+    collection = MutableFakeCollection({"POLICY": "청년 월세 지원"})
+    retriever = BM25PolicyRetriever(collection=collection, search_k=3)
+    raw_path = tmp_path / "raw.json"
+    raw_path.write_text("[]")
+    original_mtime = raw_path.stat().st_mtime
+
+    async def scenario():
+        task = asyncio.create_task(
+            run_bm25_refresh(retriever, raw_path, poll_seconds=0.01)
+        )
+        await asyncio.sleep(0.05)
+        assert set(retriever.index.documents) == {"POLICY"}
+
+        collection.policies["POLICY2"] = "청년 창업 지원"
+        os.utime(raw_path, (original_mtime + 5, original_mtime + 5))
+
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if "POLICY2" in retriever.index.documents:
+                break
+
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert set(retriever.index.documents) == {"POLICY", "POLICY2"}
