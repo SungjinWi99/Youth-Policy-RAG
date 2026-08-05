@@ -1,8 +1,11 @@
+# VM의 /opt/youth-policy-rag/.env가 API 키와 함께 IMAGE_REPOSITORY를 담는다.
+# (예: IMAGE_REPOSITORY=asia-northeast3-docker.pkg.dev/<프로젝트ID>/youth-policy-rag)
+# Compose는 같은 디렉터리의 .env를 ${...} 치환과 api의 env_file 양쪽에 쓴다.
 name: youth-policy-rag
 
 services:
   api:
-    image: ${ECR_REPOSITORY}:api-v1
+    image: ${IMAGE_REPOSITORY}:api-v1
     env_file:
       - ${APP_ENV_FILE:-.env}
     environment:
@@ -15,12 +18,12 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
     volumes:
       - ${DATA_DIR:-/opt/youth-policy-rag/data}:/app/data
-    # LangFeather UI, published on all interfaces for plain-HTTP testing
-    # over the EC2 instance's public IP. No auth on the collector — open
-    # port 4319 in the security group only for as long as you're testing,
-    # and put this behind SSH tunnel / reverse proxy auth before real use.
+    # LangFeather UI. The collector has no auth and its traces contain raw
+    # user questions, so it is bound to loopback only. To view it, tunnel in:
+    #   gcloud compute ssh <vm> --zone <zone> --tunnel-through-iap \
+    #     -- -L 4319:127.0.0.1:4319
     ports:
-      - "4319:4319"
+      - "127.0.0.1:4319:4319"
     expose:
       - "8000"
     # slim 이미지에 curl이 없어 python으로 찌른다. /health는 Chroma 컬렉션
@@ -47,7 +50,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ${ECR_REPOSITORY}:web-v1
+    image: ${IMAGE_REPOSITORY}:web-v1
     environment:
       BACKEND_URL: http://api:8000
     depends_on:
