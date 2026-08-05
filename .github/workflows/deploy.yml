@@ -4,6 +4,9 @@ on:
   # main에 커밋이 올라오면 자동 실행
   push:
     branches: [main]
+  # PR에서는 test job만 돈다 (아래 두 job의 if 조건 참고).
+  # 머지 전에 검증이 붙지 않으면 Renovate가 연 PR을 판단할 근거가 없다
+  pull_request:
   # Actions 탭에서 손으로 실행 (브랜치 지정 가능). 커밋 없이 배포를 시험할 때 쓴다
   workflow_dispatch:
 
@@ -35,6 +38,8 @@ jobs:
   # ── job 2. 이미지 빌드 후 Artifact Registry에 푸시 ──────────────────────
   # job은 각각 새 러너(우분투 VM)라 checkout·인증을 다시 해야 한다
   build-and-push:
+    # PR에서는 건너뛴다. 없으면 PR을 열 때마다 실제 배포가 나간다
+    if: github.event_name != 'pull_request'
     needs: test
     runs-on: ubuntu-latest
     # Workload Identity Federation: 장기 키 없이 GitHub이 발급한 OIDC 토큰으로
@@ -81,6 +86,7 @@ jobs:
   # ── job 3. VM에 접속해 새 이미지로 교체 ────────────────────────────────
   # 이미지는 러너가 보내지 않는다. VM이 자기 서비스 계정으로 직접 pull한다
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build-and-push
     runs-on: ubuntu-latest
     permissions:
