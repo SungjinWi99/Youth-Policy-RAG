@@ -1,3 +1,5 @@
+from collections.abc import Callable
+from datetime import date
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -33,6 +35,8 @@ Policy Checker를 통과한 정책 문서와 사용자 질문에 근거해 답�
   사용자가 자격을 충족한다고 확정하지 않는다.
 - 소득 단위, 개인·가구 기준, 가구원 수 또는 산정 방식이 불명확하면
   소득 조건 충족 여부를 추정하지 말고 추가 확인이 필요하다고 답한다.
+- 현재 시각과 신청 기간/사업 기간을 비교해 마감 여부를 판단하고,
+  이미 마감된 정책이면 마감되었음을 분명히 알린다.
 """.strip()
 
 GENERATOR_HUMAN_PROMPT = """
@@ -44,6 +48,9 @@ GENERATOR_HUMAN_PROMPT = """
 
 사용자 프로필:
 {user_profile}
+
+현재 시각:
+{today}
 
 Checker를 통과한 정책 문서:
 <policy_context>
@@ -101,6 +108,7 @@ def _format_policy_assessments(
 def make_answer_generator_node(
     llm: BaseChatModel,
     history_window_size: int,
+    today_provider: Callable[[], date] = date.today,
 ):
     chain = prompt | llm | StrOutputParser()
 
@@ -112,6 +120,7 @@ def make_answer_generator_node(
             ),
             "current_question": state["user_input"],
             "user_profile": format_user_profile(state["user_profile"]),
+            "today": today_provider(),
             "accepted_policies": (
                 format_docs(state.get("documents", [])) or "없음"
             ),
