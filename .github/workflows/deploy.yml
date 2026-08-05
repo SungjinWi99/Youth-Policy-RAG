@@ -3,6 +3,8 @@ name: Build and Deploy
 on:
   push:
     branches: [main]
+  # 커밋 없이 임의 브랜치로 배포를 돌려볼 수 있게 한다.
+  workflow_dispatch:
 
 env:
   GCP_REGION: asia-northeast3
