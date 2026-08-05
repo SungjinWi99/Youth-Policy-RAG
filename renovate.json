@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard"
+  ],
+  "timezone": "Asia/Seoul",
+  "schedule": ["* 0-6 * * *"],
+  "prConcurrentLimit": 3,
+  "packageRules": [
+    {
+      "description": "SDK와 collector는 버전이 맞아야 한다. 따로 오면 어긋난 채로 머지될 수 있으므로 한 PR로 묶는다. rangeStrategy=bump는 pyproject의 <0.3 상한선까지 같이 올린다.",
+      "matchPackageNames": [
+        "langfeather",
+        "ghcr.io/sungjinwi99/langfeather"
+      ],
+      "groupName": "langfeather",
+      "rangeStrategy": "bump",
+      "schedule": ["at any time"]
+    },
+    {
+      "description": "패치 업데이트는 한 PR로 모아 소음을 줄인다.",
+      "matchUpdateTypes": ["patch"],
+      "groupName": "patch updates"
+    },
+    {
+      "description": "메이저는 자동으로 올리지 않는다. 대시보드에 쌓아두고 사람이 판단한다.",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    }
+  ]
+}
