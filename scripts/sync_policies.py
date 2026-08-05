@@ -271,7 +271,10 @@ def main() -> None:
         f"delete={len(plan.delete)}, "
         f"total={vector_store._collection.count()}, raw={raw_path}"
     )
-    print("실행 중인 API 서버가 있다면 재시작해 BM25 인덱스를 갱신하세요.")
+    print(
+        "실행 중인 API 서버는 원본 스냅샷의 변경을 감지해 BM25 인덱스를 "
+        "자동으로 재구성합니다. 재시작할 필요가 없습니다."
+    )
 
 
 if __name__ == "__main__":
