@@ -24,6 +24,18 @@ services:
       - "127.0.0.1:4319:4319"
     expose:
       - "8000"
+    # slim 이미지에 curl이 없어 python으로 찌른다. /health는 Chroma 컬렉션
+    # 접근만 확인하므로 외부 provider 지연으로 재시작되지 않는다.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health")
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     restart: unless-stopped
 
   langfeather:
@@ -42,7 +54,8 @@ services:
     environment:
       BACKEND_URL: http://api:8000
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
       - "${WEB_PORT:-3000}:3000"
     restart: unless-stopped

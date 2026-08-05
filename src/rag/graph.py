@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import AsyncIterator, Sequence
 from typing import Literal
 from uuid import uuid4
@@ -20,6 +21,8 @@ from src.rag.state import (
 )
 from src.rag.utils import format_doc
 
+logger = logging.getLogger(__name__)
+
 
 class PolicyRagGraph:
     def __init__(
@@ -33,6 +36,7 @@ class PolicyRagGraph:
         checkpointer: AsyncCompatibleSqliteSaver,
         max_retrieval_retries: int = 3,
         bm25_retriever: BM25PolicyRetriever | None = None,
+        vector_store=None,
     ):
         if max_retrieval_retries < 0:
             raise ValueError("max_retrieval_retries는 0 이상이어야 합니다.")
@@ -46,6 +50,8 @@ class PolicyRagGraph:
         # hybrid 모드에서만 존재. main.py가 이 참조로 백그라운드 새로고침
         # 태스크를 띄운다(run_bm25_refresh).
         self.bm25_retriever = bm25_retriever
+        # /health가 Chroma 컬렉션 접근을 확인하는 데 쓴다.
+        self.vector_store = vector_store
         self.graph = self._compile_graph()
 
     def _compile_graph(self):
@@ -247,6 +253,39 @@ class PolicyRagGraph:
         trace_id: str | None = None,
         trace_metadata: dict | None = None,
     ) -> AsyncIterator[str]:
+        # 첫 이벤트가 나간 뒤에는 이미 200 OK와 헤더가 전송된 상태라
+        # HTTP 에러로 알릴 수 없다. 중간 실패는 error 이벤트로 알리고
+        # done으로 닫아 프론트가 무한 대기하지 않게 한다.
+        # CancelledError(클라이언트 연결 종료)는 BaseException이라 잡히지 않는다.
+        try:
+            async for event in self._stream_events(
+                user_input=user_input,
+                user_profile=user_profile,
+                thread_id=thread_id,
+                exclude_expired=exclude_expired,
+                trace_id=trace_id,
+                trace_metadata=trace_metadata,
+            ):
+                yield event
+        except Exception:
+            logger.exception(
+                "stream_answer 실패 trace_id=%s thread_id=%s",
+                trace_id,
+                thread_id,
+            )
+            yield self._error_event(trace_id)
+            yield self._sse_event("done")
+
+    async def _stream_events(
+        self,
+        *,
+        user_input: str,
+        user_profile: RAGUserProfile,
+        thread_id: str | None,
+        exclude_expired: bool,
+        trace_id: str | None,
+        trace_metadata: dict | None,
+    ) -> AsyncIterator[str]:
         graph_input = self.build_graph_input(
             user_input=user_input,
             user_profile=user_profile,
@@ -437,6 +476,14 @@ class PolicyRagGraph:
             "metadata",
             data,
         )
+
+    @classmethod
+    def _error_event(cls, trace_id: str | None) -> str:
+        # 사용자 질문·프로필 값은 넣지 않는다. 원인 추적은 trace_id로 한다.
+        data = {"message": "답변을 생성하는 중 오류가 발생했습니다."}
+        if trace_id:
+            data["trace_id"] = trace_id
+        return cls._sse_event("error", data)
 
     @classmethod
     def _status_event(cls, stage: str, message: str) -> str:

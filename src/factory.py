@@ -198,4 +198,5 @@ def build_rag_graph(
         checkpointer=checkpointer,
         max_retrieval_retries=config.rag.policy_checker.max_retries,
         bm25_retriever=bm25_retriever,
+        vector_store=vector_store,
     )
