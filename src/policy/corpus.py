@@ -38,6 +38,9 @@ def validate_policies(
 
 
 def load_policy_snapshot(path: Path) -> list[dict[str, Any]]:
+    """
+    로컬에 저장된 정책 스냅샷 JSON 파일을 읽고, 유효한 정책 리스트인지 검증한 뒤 반환
+    """
     with path.open(encoding="utf-8") as policy_file:
         policies = json.load(policy_file)
     return validate_policies(
@@ -45,14 +48,6 @@ def load_policy_snapshot(path: Path) -> list[dict[str, Any]]:
         source=str(path),
         require_non_empty=True,
     )
-
-
-def find_new_policies(
-    existing: list[dict[str, Any]],
-    fetched: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    existing_ids = {policy_id(item) for item in existing}
-    return [item for item in fetched if policy_id(item) not in existing_ids]
 
 
 def write_policy_snapshot_atomically(

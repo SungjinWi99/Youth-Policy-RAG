@@ -1,7 +1,6 @@
 import pytest
 import requests
 
-from src.policy.corpus import find_new_policies
 from src.policy.source import (
     YouthPolicyApiError,
     fetch_page,
@@ -145,14 +144,18 @@ def test_fetch_page_does_not_expose_api_key_in_error():
     assert "SECRET" not in str(exc_info.value)
 
 
-def test_find_new_policies_preserves_api_order():
-    existing = [{"plcyNo": "P1"}]
-    fetched = [
-        {"plcyNo": "P1"},
-        {"plcyNo": "P3"},
-        {"plcyNo": "P2"},
-    ]
+def test_fetch_policies_rejects_truncated_response():
+    # 삭제까지 반영하므로, 잘린 목록을 정상으로 받아들이면 데이터가 사라진다.
+    session = FakeSession([
+        FakeResponse(api_page([{"plcyNo": "P1"}], total=3, page=1)),
+        FakeResponse(api_page([], total=3, page=2)),
+    ])
 
-    assert [
-        item["plcyNo"] for item in find_new_policies(existing, fetched)
-    ] == ["P3", "P2"]
+    with pytest.raises(YouthPolicyApiError, match="수집 건수가 다릅니다"):
+        fetch_policies(
+            api_key="secret",
+            page_size=2,
+            request_delay=0,
+            retry_backoff=0,
+            session=session,
+        )

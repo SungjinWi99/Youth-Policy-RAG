@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import chromadb
 from langchain_chroma import Chroma
@@ -84,75 +84,96 @@ def get_collection_ids(collection: Any) -> set[str]:
     return {str(item_id) for item_id in result.get("ids", [])}
 
 
-def ensure_collection_matches_raw(
+class SyncPlan(NamedTuple):
+    upsert: list[dict[str, Any]]
+    delete: list[str]
+    # Chroma에만 있고 스냅샷에도 API에도 없는 ID. 우리가 넣은 적 없는 문서이므로
+    # 잘못된 컬렉션을 지우지 않도록 보고만 하고 건드리지 않는다.
+    orphan: list[str]
+
+
+def _document_map(
+    policies: list[dict[str, Any]],
+) -> dict[str, tuple[str, dict[str, Any]]]:
+    documents, ids = build_documents(policies)
+    return {
+        item_id: (document.page_content, document.metadata)
+        for item_id, document in zip(ids, documents)
+    }
+
+
+def plan_sync(
     collection: Any,
-    existing_policies: list[dict[str, Any]],
-) -> None:
-    raw_ids = {policy_id(item) for item in existing_policies}
-    collection_ids = get_collection_ids(collection)
-    if raw_ids == collection_ids:
-        return
+    snapshot_policies: list[dict[str, Any]],
+    fetched_policies: list[dict[str, Any]],
+) -> SyncPlan:
+    """API 응답을 정답으로 삼아 Chroma에 반영할 작업을 계산한다.
 
-    only_raw = sorted(raw_ids - collection_ids)
-    only_chroma = sorted(collection_ids - raw_ids)
-    raise RuntimeError(
-        "증분 반영 전 원본 JSON과 Chroma의 정책 ID가 일치해야 합니다. "
-        f"raw_only={len(only_raw)} {only_raw[:5]}, "
-        f"chroma_only={len(only_chroma)} {only_chroma[:5]}"
-    )
+    변경 판정은 원본 필드가 아니라 build_documents 결과로 한다. 조회수(inqCnt)나
+    수정일시처럼 문서에 들어가지 않는 필드는 재임베딩을 유발하지 않는다.
+    존재 판정은 스냅샷이 아니라 Chroma 실제 ID로 하므로, 중단된 실행이 남긴
+    불일치는 다음 실행이 스스로 메운다.
+    """
+    chroma_ids = get_collection_ids(collection)
+    snapshot_documents = _document_map(snapshot_policies)
+    fetched_documents = _document_map(fetched_policies)
+    fetched_by_id = {
+        policy_id(item): item for item in fetched_policies
+    }
+
+    upsert = [
+        item
+        for item_id, item in fetched_by_id.items()
+        if item_id not in chroma_ids
+        or fetched_documents[item_id] != snapshot_documents.get(item_id)
+    ]
+    snapshot_ids = {policy_id(item) for item in snapshot_policies}
+    delete = sorted(snapshot_ids - fetched_by_id.keys())
+    orphan = sorted(chroma_ids - snapshot_ids - fetched_by_id.keys())
+    return SyncPlan(upsert=upsert, delete=delete, orphan=orphan)
 
 
-def apply_incremental_update(
+def apply_policy_sync(
     *,
     raw_path: Path,
-    existing_policies: list[dict[str, Any]],
-    new_policies: list[dict[str, Any]],
+    fetched_policies: list[dict[str, Any]],
+    plan: SyncPlan,
     vector_store: Chroma,
     batch_size: int,
     sleep_seconds: float,
     provider: str,
     passage_model: str,
 ) -> None:
-    ensure_collection_matches_raw(
-        vector_store._collection,
-        existing_policies,
-    )
-    # 적재 전에 막아야 한다. 여기를 통과시키면 잘못된 모델로 만든 벡터가
-    # 정상 인덱스 안에 섞여 들어가고, 되돌릴 방법이 없다(ISSUE-002).
+    """Chroma를 먼저 맞추고, 마지막에 스냅샷을 API 응답으로 교체한다.
+
+    중간에 실패하면 스냅샷이 그대로 남아 다음 실행이 같은 계획을 다시 세운다.
+    upsert도 delete도 멱등하므로 롤백 대신 재실행으로 수렴시킨다.
+    """
     verify_embedding_consistency(
         vector_store,
         provider=provider,
         passage_model=passage_model,
     )
-    documents, new_ids = build_documents(new_policies)
-    original_count = len(existing_policies)
+    documents, ids = build_documents(plan.upsert)
+    ingest_documents(
+        vector_store=vector_store,
+        documents=documents,
+        ids=ids,
+        batch_size=batch_size,
+        sleep_seconds=sleep_seconds,
+    )
+    if plan.delete:
+        vector_store._collection.delete(ids=plan.delete)
 
-    try:
-        for start in range(0, len(documents), batch_size):
-            end = start + batch_size
-            vector_store.add_documents(
-                documents=documents[start:end],
-                ids=new_ids[start:end],
-            )
-            print(
-                f"Chroma 적재: {min(end, len(documents))}/"
-                f"{len(documents)}"
-            )
-            if end < len(documents) and sleep_seconds > 0:
-                time.sleep(sleep_seconds)
-
-        expected_count = original_count + len(new_policies)
-        stored_count = vector_store._collection.count()
-        if stored_count != expected_count:
-            raise RuntimeError(
-                f"Chroma 적재 건수가 일치하지 않습니다: "
-                f"expected={expected_count}, stored={stored_count}"
-            )
-        write_policy_snapshot_atomically(
-            raw_path,
-            [*existing_policies, *new_policies],
+    # 전체 건수 대신 우리가 쓴 ID만 확인한다. 건수 비교는 반영하지 않는 표류
+    # 문서(orphan)만큼 어긋나서, 적재가 조용히 실패해도 통과할 수 있다.
+    stored_ids = get_collection_ids(vector_store._collection)
+    missing = sorted(set(ids) - stored_ids)
+    remaining = sorted(set(plan.delete) & stored_ids)
+    if missing or remaining:
+        raise RuntimeError(
+            f"Chroma 반영이 끝나지 않았습니다: "
+            f"upsert_missing={len(missing)} {missing[:5]}, "
+            f"delete_remaining={len(remaining)} {remaining[:5]}"
         )
-    except BaseException:
-        # 신규 ID는 사전 검증 시 Chroma에 없었으므로 모두 삭제해도 안전하다.
-        vector_store._collection.delete(ids=new_ids)
-        raise
+    write_policy_snapshot_atomically(raw_path, fetched_policies)

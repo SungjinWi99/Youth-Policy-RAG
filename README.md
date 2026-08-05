@@ -29,6 +29,9 @@
 ```mermaid
 flowchart LR
     API["온통청년 OpenAPI"] --> RAW["정책 원본 JSON"]
+    API --> SYNC["sync_policies.py<br/>추가·변경·삭제 동기화"]
+    SYNC --> RAW
+    SYNC --> CHROMA
     RAW --> INGEST["ingest_chroma.py"]
     INGEST --> CHROMA["Chroma Vector Store"]
 
@@ -65,7 +68,7 @@ flowchart LR
 │   ├── sqlite/                    # 사용자 프로필 DB, 대화 checkpoint DB
 │   └── eval/                      # 평가 데이터셋 JSONL
 ├── scripts/
-│   ├── collect_data.py            # 정책 데이터 수집
+│   ├── sync_policies.py           # 정책 수집 및 원본·Chroma 동기화
 │   ├── ingest_chroma.py           # 문서 임베딩 및 Chroma 적재
 │   ├── generate_eval_dataset.py   # 평가 데이터 생성
 │   ├── generate_planner_query_cache.py # Planner query 고정
@@ -109,7 +112,7 @@ uv sync
 명령은 가상환경을 활성화하지 않고 실행합니다.
 
 ```bash
-uv run python -m scripts.collect_data --limit-test
+uv run python -m scripts.sync_policies --limit-test
 uv run uvicorn main:app --reload
 ```
 
@@ -226,40 +229,47 @@ uv run --locked uvicorn main:app --host 127.0.0.1 --port 8000
 
 ### 1. 정책 데이터 수집
 
+수집과 동기화는 `scripts.sync_policies` 하나로 처리합니다.
+
 API 연결과 파일 생성을 10건으로 먼저 확인할 수 있습니다. 테스트 결과는
 `data/raw/youth_policies.sample.json`에 저장되어 운영 원본을 덮어쓰지 않습니다.
 
 ```bash
-uv run python -m scripts.collect_data --limit-test
+uv run python -m scripts.sync_policies --limit-test
 ```
 
-전체 정책을 수집합니다.
+Chroma가 아직 없는 최초 구축에서는 원본 JSON만 수집한 뒤 아래 "2. Chroma
+적재"로 넘어갑니다. 수집 결과는 `config.yaml`의 `data.raw` 경로에 저장됩니다.
 
 ```bash
-uv run python -m scripts.collect_data
+uv run python -m scripts.sync_policies --snapshot-only
 ```
 
-수집 결과는 `config.yaml`의 `data.raw` 경로에 저장됩니다.
-
-기존 원본 JSON과 Chroma 컬렉션에 신규 정책만 추가할 때는 먼저 변경
-예정 건수를 확인합니다.
+이미 Chroma가 있다면 먼저 반영 예정 건수를 확인합니다.
 
 ```bash
-uv run python -m scripts.sync_new_policies --dry-run
+uv run python -m scripts.sync_policies --dry-run
 ```
 
-확인 후 증분 동기화를 실행합니다.
+확인 후 동기화를 실행합니다.
 
 ```bash
-uv run python -m scripts.sync_new_policies
+uv run python -m scripts.sync_policies
 ```
 
-`plcyNo`가 로컬 원본에 없는 정책만 추가하고, API에서 더 이상 조회되지 않는
-기존 정책은 삭제하지 않습니다. API 페이지 일부가 누락되거나 원본 JSON과
-Chroma의 기존 ID가 다르면 변경 없이 중단합니다. 설정을 따로 지정하지 않으면
-`config.yaml`의 원본 경로, Chroma 경로·컬렉션, `retriever.provider`,
-`retriever.passage_model`을 사용합니다. 실행 중인 API 서버가 있다면 동기화
-후 재시작해야 메모리의 BM25 인덱스에도 반영됩니다.
+API 응답을 정답으로 삼아 신규 정책 추가, 내용이 바뀐 정책 재적재, API에서
+사라진 정책 삭제를 모두 반영하고 원본 JSON을 API 응답으로 교체합니다. 재적재
+판정은 실제 임베딩 문서(본문 + metadata) 기준이라 조회수처럼 문서에 들어가지
+않는 필드만 바뀐 정책은 다시 임베딩하지 않습니다.
+
+삭제 대상이 원본의 5%(최소 20건)를 넘으면 API 응답 이상을 의심해 변경 없이
+중단합니다. 의도한 삭제라면 `--allow-deletions`를 붙여 다시 실행합니다.
+동기화가 중간에 실패하면 원본 JSON이 그대로 남아, 다시 실행하면 같은 계획을
+다시 세워 남은 작업만 마저 반영합니다.
+
+설정을 따로 지정하지 않으면 `config.yaml`의 원본 경로, Chroma 경로·컬렉션,
+`retriever.provider`, `retriever.passage_model`을 사용합니다. 실행 중인 API
+서버가 있다면 동기화 후 재시작해야 메모리의 BM25 인덱스에도 반영됩니다.
 
 ### 2. Chroma 적재
 

@@ -33,6 +33,9 @@ def fetch_page(
     page_size: int,
     timeout: float,
 ) -> dict[str, Any]:
+    """
+    API 한 페이지를 요청하고, 응답의 기본 형식을 검사
+    """
     params = {
         "apiKeyNm": api_key,
         "pageNum": page_num,
@@ -108,6 +111,10 @@ def parse_result_page(
     *,
     page_num: int,
 ) -> tuple[list[dict[str, Any]], int, int]:
+    """
+    API 응답 payloaddptj 정책 목록("result")과 페이징 정보("pagging")를 꺼내고,
+    형식이 잘못될 경우 에러를 띄움
+    """
     result = payload.get("result")
     if not isinstance(result, dict):
         raise YouthPolicyApiError(
@@ -148,6 +155,11 @@ def fetch_policies(
     max_pages: int | None = None,
     session: requests.Session | None = None,
 ) -> list[dict[str, Any]]:
+    """
+    온통청년 API에서 정책 목록을 페이지 단위로 전부 가져오고,
+    중간 오류나 페이징 변경을 검사한 뒤,
+    검증된 정책 리스트를 반환
+    """
     if max_pages is not None and max_pages < 1:
         raise ValueError("max_pages는 1 이상이어야 합니다.")
     owns_session = session is None
@@ -162,6 +174,7 @@ def fetch_policies(
             max_attempts=max_attempts,
             retry_backoff=retry_backoff,
         )
+        # 첫 페이지 요청을 통해 total_count와 page_size, total_pages 등의 정보를 얻음
         first_policies, total_count, actual_page_size = parse_result_page(
             first_payload,
             page_num=1,
@@ -179,6 +192,7 @@ def fetch_policies(
             f"온통청년 API: total={total_count}, pages={pages_to_fetch}/"
             f"{total_pages}, page_size={actual_page_size}"
         )
+        # 첫 페이지 요청을 통해 얻은 정보를 바탕으로 이후 페이지도 요청
         policies = list(first_policies)
         for page_num in range(2, pages_to_fetch + 1):
             if request_delay > 0:
