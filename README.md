@@ -196,6 +196,22 @@ gcloud compute ssh $VM $TUNNEL --command '
 
 `data/sqlite`는 비워 둡니다. 앱이 기동할 때 스키마를 만듭니다.
 
+### 배포 서버에서 정책 갱신
+
+`scripts/`가 API 이미지에 포함되어 있으므로 동기화는 VM에서 실행합니다.
+`data/`가 컨테이너에 마운트되어 있어 결과가 그대로 반영됩니다.
+
+```bash
+gcloud compute ssh $VM $TUNNEL --command '
+  cd /opt/youth-policy-rag
+  sudo docker compose -f compose.gcp.yaml run --rm api \
+    uv run --no-sync python scripts/sync_policies.py
+'
+```
+
+원본 스냅샷 교체가 끝나면 실행 중인 API가 `data/raw`의 mtime 변화를 감지해
+BM25 역색인을 백그라운드에서 재구성합니다(ISSUE-001). 재시작할 필요가 없습니다.
+
 LangFeather UI는 외부에 열려 있지 않습니다. 보려면 터널을 엽니다.
 
 ```bash
