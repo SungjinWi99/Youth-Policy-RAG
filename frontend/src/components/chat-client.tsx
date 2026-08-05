@@ -27,7 +27,7 @@ const SUGGESTED_QUESTIONS = [
 type AppState = "loading" | "onboarding" | "ready";
 
 type SseEvent = {
-  type: "metadata" | "status" | "chunk" | "done";
+  type: "metadata" | "status" | "chunk" | "done" | "error";
   data?: unknown;
 };
 
@@ -218,6 +218,21 @@ export function ChatClient() {
   }
 
   function handleSseEvent(event: SseEvent, assistantId: string) {
+    // 스트리밍 중 실패. 이미 200 OK가 나간 뒤라 서버가 HTTP 에러를 낼 수 없어
+    // 이 이벤트로 온다. 뒤이어 done이 오므로 스트림 종료는 그쪽에서 처리된다.
+    if (event.type === "error") {
+      const data = event.data as { message?: string } | undefined;
+      const message = data?.message ?? "답변을 생성하지 못했습니다.";
+      setPageError(`${message} 잠시 후 다시 시도해 주세요.`);
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === assistantId && !item.content
+            ? { ...item, content: message }
+            : item,
+        ),
+      );
+      return;
+    }
     if (event.type === "status") {
       const data = event.data as { message?: string } | undefined;
       if (data?.message) {

@@ -3,10 +3,14 @@ name: Build and Deploy
 on:
   push:
     branches: [main]
+  # 커밋 없이 임의 브랜치로 배포를 돌려볼 수 있게 한다.
+  workflow_dispatch:
 
 env:
-  AWS_REGION: ap-northeast-2
-  ECR_REPOSITORY: 605855662890.dkr.ecr.ap-northeast-2.amazonaws.com/wiggle/youth-policy-rag
+  GCP_REGION: asia-northeast3
+  GCP_ZONE: asia-northeast3-a
+  VM_NAME: youth-policy-rag
+  APP_DIR: /opt/youth-policy-rag
 
 jobs:
   test:
@@ -25,58 +29,86 @@ jobs:
   build-and-push:
     needs: test
     runs-on: ubuntu-latest
+    # Workload Identity Federation: 장기 키 없이 GitHub이 발급한 OIDC 토큰으로
+    # 서비스 계정을 가장한다. id-token 권한이 그 토큰을 받기 위한 것이다.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: google-github-actions/auth@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
-      - name: Log in to ECR
-        uses: aws-actions/amazon-ecr-login@v2
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
 
       - name: Build & push API image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ env.ECR_REPOSITORY }}:api-v1
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/youth-policy-rag/api:v1
 
       - name: Build & push Web image
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
           push: true
-          tags: ${{ env.ECR_REPOSITORY }}:web-v1
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/youth-policy-rag/web:v1
 
   deploy:
     needs: build-and-push
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Sync compose config to EC2
-        uses: appleboy/scp-action@v0.1.7
+      - uses: google-github-actions/auth@v2
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          source: "deploy/compose.ec2.yaml,deploy/Caddyfile.http"
-          target: "/opt/youth-policy-rag"
-          strip_components: 1
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
-      - name: Deploy to EC2 over SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd /opt/youth-policy-rag
-            aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin ${{ env.ECR_REPOSITORY }}
-            docker compose -f compose.ec2.yaml pull
-            docker compose -f compose.ec2.yaml up -d
-            docker image prune -f
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # SSH 포트는 인터넷에 열려 있지 않다. IAP 터널로만 들어간다.
+      # /opt는 root 소유라 SSH 사용자 홈으로 받은 뒤 sudo로 옮긴다.
+      - name: Sync compose config to the VM
+        run: |
+          gcloud compute scp deploy/compose.gcp.yaml deploy/Caddyfile.http \
+            ${{ env.VM_NAME }}:~/ \
+            --zone ${{ env.GCP_ZONE }} --tunnel-through-iap
+          gcloud compute ssh ${{ env.VM_NAME }} \
+            --zone ${{ env.GCP_ZONE }} --tunnel-through-iap --command '
+              set -eu
+              sudo install -m 644 ~/compose.gcp.yaml ~/Caddyfile.http ${{ env.APP_DIR }}/
+            '
+
+      # --wait은 api의 healthcheck가 healthy가 될 때까지 기다리고, 안 되면 실패한다.
+      # 컨테이너가 떴다는 것과 서비스가 정상이라는 것은 다르다.
+      - name: Pull and restart
+        run: |
+          gcloud compute ssh ${{ env.VM_NAME }} \
+            --zone ${{ env.GCP_ZONE }} --tunnel-through-iap --command '
+              set -eu
+              cd ${{ env.APP_DIR }}
+              sudo docker compose -f compose.gcp.yaml pull
+              sudo docker compose -f compose.gcp.yaml up -d --wait --wait-timeout 180
+              sudo docker image prune -f
+            '
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          gcloud compute ssh ${{ env.VM_NAME }} \
+            --zone ${{ env.GCP_ZONE }} --tunnel-through-iap --command '
+              cd ${{ env.APP_DIR }}
+              sudo docker compose -f compose.gcp.yaml ps
+              sudo docker compose -f compose.gcp.yaml logs --tail 100
+            '

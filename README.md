@@ -61,7 +61,7 @@ flowchart LR
 ├── config.yaml                    # 모델, 저장소, 평가 설정
 ├── main.py                        # FastAPI 애플리케이션
 ├── frontend/                      # Next.js 상담 웹서비스
-├── deploy/                        # Nginx·systemd 배포 예시
+├── deploy/                        # GCP 배포 (Compose·Caddy·부트스트랩 스크립트)
 ├── data/
 │   ├── raw/                       # OpenAPI 원본 데이터
 │   ├── chroma/                    # Chroma 영속 데이터
@@ -156,6 +156,85 @@ LangFeather 0.2.0의 collector는 Host 헤더가 `localhost`/`127.0.0.1`이 아�
 사용합니다. Collector는 인증이 없는 single-user local-first prototype이므로
 호스트 포트는 `127.0.0.1:4319`로만 열어 외부에 노출하지 않습니다. UI를 보려면
 배포 서버로 SSH 터널을 연 뒤 `http://127.0.0.1:4319`에 접속하세요.
+
+## 배포 (GCP Compute Engine)
+
+단일 VM에 같은 Compose 스택을 띄웁니다. 이 서비스는 SQLite 두 개(세션·대화
+checkpoint)에 매 요청 쓰고 BM25 역색인을 프로세스 메모리에 들고 있어 **단일
+인스턴스 전제**입니다. `main` 푸시가 GitHub Actions에서 테스트 → 이미지 빌드 →
+Artifact Registry 푸시 → VM 재기동까지 처리합니다.
+
+인프라는 1회만 만듭니다.
+
+```bash
+gcloud auth login
+PROJECT_ID=<프로젝트ID> bash deploy/gcp-bootstrap.sh
+```
+
+스크립트가 API 활성화, Artifact Registry, 고정 IP, VM(e2-medium·Ubuntu 24.04·
+Docker), 방화벽, 배포용 서비스 계정, Workload Identity Federation을 만들고 마지막에
+GitHub Secrets에 넣을 값을 출력합니다. 방화벽은 **80만** 외부에 열고 SSH(22)는
+IAP 터널 대역만 허용하므로, 배포도 접속도 `--tunnel-through-iap`로 들어갑니다.
+
+이어서 `.env`를 올립니다. 로컬 `.env`에 `IMAGE_REPOSITORY`를 더한 것입니다.
+`/opt`는 root 소유이므로 홈으로 올린 뒤 옮깁니다.
+
+```bash
+VM=youth-policy-rag ZONE=asia-northeast3-a
+TUNNEL="--zone $ZONE --tunnel-through-iap"
+
+gcloud compute scp .env $VM:~/app.env $TUNNEL
+gcloud compute ssh $VM $TUNNEL --command '
+  sudo install -m 600 ~/app.env /opt/youth-policy-rag/.env && rm ~/app.env
+'
+```
+
+`data/`는 옮기지 않습니다. **VM이 직접 만듭니다.** `scripts/`가 API 이미지에
+들어 있고 `data/`가 볼륨으로 마운트되므로, 원본 수집과 Chroma 적재를 서버에서
+실행하면 됩니다. 인덱스를 로컬에서 만들어 올릴 이유가 없습니다.
+
+```bash
+gcloud compute ssh $VM $TUNNEL --command '
+  cd /opt/youth-policy-rag
+  sudo docker compose -f compose.gcp.yaml run --rm --no-deps api \
+    uv run --no-sync python scripts/sync_policies.py --snapshot-only
+  sudo docker compose -f compose.gcp.yaml run --rm --no-deps api \
+    uv run --no-sync python scripts/ingest_chroma.py \
+      --provider upstage --model solar-embedding-1-large-passage \
+      --chroma-dir data/chroma --recreate
+'
+```
+
+**순서를 지켜야 합니다 — 데이터가 먼저, 배포가 나중입니다.** 문서가 0건이면
+`BM25DocumentIndex`가 기동 시점에 예외를 던져 컨테이너가 재시작 루프에 빠집니다.
+빈 인덱스로 조용히 서빙하는 것보다 낫지만, 그래서 첫 배포는 위 두 명령을 끝낸
+뒤에 돌려야 합니다. `docker compose run`은 서버 기동 경로를 타지 않으므로
+데이터가 없는 상태에서도 정상 동작합니다.
+
+`data/sqlite`는 비워 둡니다. 앱이 기동할 때 스키마를 만듭니다.
+
+### 배포 서버에서 정책 갱신
+
+같은 방식으로 동기화를 실행합니다. 되돌릴 수 없는 작업이므로
+`--limit-test`(연결 확인) → `--dry-run`(변경 규모 확인) → 실제 실행 순서를
+권장합니다.
+
+```bash
+gcloud compute ssh $VM $TUNNEL --command '
+  cd /opt/youth-policy-rag
+  sudo docker compose -f compose.gcp.yaml run --rm --no-deps api \
+    uv run --no-sync python scripts/sync_policies.py --dry-run
+'
+```
+
+원본 스냅샷 교체가 끝나면 실행 중인 API가 `data/raw`의 mtime 변화를 감지해
+BM25 역색인을 백그라운드에서 재구성합니다(ISSUE-001). 재시작할 필요가 없습니다.
+
+LangFeather UI는 외부에 열려 있지 않습니다. 보려면 터널을 엽니다.
+
+```bash
+gcloud compute ssh $VM --zone $ZONE --tunnel-through-iap -- -L 4319:127.0.0.1:4319
+```
 
 ## 설정
 
@@ -363,8 +442,8 @@ npm run dev
 `http://<컴퓨터의 사설 IP>:3000`으로 접속합니다. FastAPI 8000 포트는
 LAN에 공개할 필요가 없습니다.
 
-프론트 제품 범위는 `docs/frontend_product_spec.md`, 로컬·EC2 배포 구조는
-`docs/frontend_deployment.md`를 참고합니다.
+프론트 제품 범위는 `docs/private/frontend_product_spec.md`, 배포 구조는
+아래 "배포"를 참고합니다.
 
 ## API
 

@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
@@ -38,6 +40,8 @@ from src.session.service import (
     update_session_profile,
 )
 
+
+logger = logging.getLogger(__name__)
 
 session_router = APIRouter(tags=["web"])
 
@@ -138,6 +142,11 @@ async def stream_session_answer(
     rag: PolicyRagGraph = Depends(get_rag_graph),
     langfeather_runtime: LangFeatherRuntime = Depends(get_langfeather_runtime),
 ) -> StreamingResponse:
+    # stream_answer는 async generator라 호출만으로는 본문이 실행되지 않는다.
+    # 여기서 잡히는 것은 스트림 시작 전 실패뿐이고(아직 응답 헤더가 안 나갔으므로
+    # 500으로 알릴 수 있다), 스트리밍 중 실패는 stream_answer 안에서
+    # error 이벤트로 처리한다.
+    trace_id = None
     try:
         rag_user_profile = session.model_dump(
             include=PROFILE_FIELD_NAMES
@@ -162,7 +171,11 @@ async def stream_session_answer(
     except HTTPException:
         raise
     except Exception as error:
-        print(error)
+        logger.exception(
+            "chat 스트림 시작 실패 trace_id=%s thread_id=%s",
+            trace_id,
+            session.thread_id,
+        )
         raise HTTPException(
             status_code=500,
             detail="LLM 답변 생성 오류",
@@ -189,8 +202,11 @@ def submit_user_feedback(
             recorded = True
         except RuntimeError as error:
             errors.append(error)
-        except Exception as error:
-            print(error)
+        except Exception:
+            logger.exception(
+                "피드백 저장 실패 trace_id=%s",
+                payload.trace_id,
+            )
             errors.append(RuntimeError("피드백 저장소에 연결할 수 없습니다."))
     if not recorded:
         message = str(errors[-1]) if errors else "피드백 수집이 비활성화되어 있습니다."

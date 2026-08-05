@@ -1,5 +1,6 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
@@ -543,6 +544,38 @@ def test_stream_answer_exposes_only_checker_accepted_policies():
     assert events[4]["data"]["retrieved_policy_ids"] == ["HIGH"]
     assert events[4]["data"]["trace_id"] == "a" * 32
     assert events[5]["data"] == "답변: 지원 정책"
+
+
+def test_stream_answer_emits_error_event_when_streaming_fails():
+    graph, *_ = build_graph()
+
+    class FailingCompiledGraph:
+        async def aget_state(self, config):
+            return SimpleNamespace(values={})
+
+        async def astream(self, *args, **kwargs):
+            raise RuntimeError("LLM 호출 실패")
+            yield  # astream을 async generator로 만들기 위한 도달 불가 코드
+
+    graph.graph = FailingCompiledGraph()
+
+    async def collect_events():
+        return [
+            json.loads(event.removeprefix("data: ").strip())
+            async for event in graph.stream_answer(
+                user_input="지원 정책",
+                user_profile={},
+                thread_id="stream-error-user",
+                trace_id="c" * 32,
+            )
+        ]
+
+    events = asyncio.run(collect_events())
+
+    # 이미 200 OK가 나간 뒤이므로 스트림이 잘리는 대신 error → done으로 닫힌다.
+    assert [event["type"] for event in events] == ["status", "error", "done"]
+    assert events[1]["data"]["trace_id"] == "c" * 32
+    assert "오류" in events[1]["data"]["message"]
 
 
 def test_delete_conversation_removes_persisted_documents():
