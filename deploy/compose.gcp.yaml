@@ -5,7 +5,7 @@ name: youth-policy-rag
 
 services:
   api:
-    image: ${IMAGE_REPOSITORY}:api-v1
+    image: ${IMAGE_REPOSITORY}/api:v1
     env_file:
       - ${APP_ENV_FILE:-.env}
     environment:
@@ -50,7 +50,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ${IMAGE_REPOSITORY}:web-v1
+    image: ${IMAGE_REPOSITORY}/web:v1
     environment:
       BACKEND_URL: http://api:8000
     depends_on:

@@ -52,14 +52,14 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/youth-policy-rag:api-v1
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/youth-policy-rag/api:v1
 
       - name: Build & push Web image
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
           push: true
-          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/youth-policy-rag:web-v1
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/youth-policy-rag/web:v1
 
   deploy:
     needs: build-and-push
