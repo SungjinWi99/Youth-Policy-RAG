@@ -1,6 +1,5 @@
 import re
 import statistics
-import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -27,7 +26,6 @@ from src.rag.retrievers import (
     tokenize_korean_legacy,
     tokenize_korean_lexical,
 )
-from src.rag.reranker import LlamaCppReranker
 
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
@@ -110,8 +108,6 @@ def build_policy_retriever(
 def build_retrieval_task(
     retriever: PolicyRetriever,
     planner_records: dict[str, PlannerQueryRecord] | None = None,
-    *,
-    reranker: LlamaCppReranker | None = None,
 ):
     def task(*, item, **kwargs) -> dict[str, Any]:
         inputs = item_value(item, "input", {}) or {}
@@ -171,30 +167,9 @@ def build_retrieval_task(
         else:
             documents = retriever.retrieve(request)
 
-        dense_policy_ids = [
-            document.metadata["plcyNo"]
-            for document in documents
-            if document.metadata.get("plcyNo")
-        ]
-        reranker_output: dict[str, Any] = {}
-        if reranker is not None:
-            started_at = time.perf_counter()
-            reranked_documents = reranker.rerank(query=query, documents=documents)
-            documents = [result.document for result in reranked_documents]
-            reranker_output = {
-                "dense_retrieved_policy_ids": dense_policy_ids,
-                "reranker_model": reranker.model,
-                "reranker_latency_ms": (time.perf_counter() - started_at) * 1000,
-                "reranker_results": [{
-                    "policy_id": result.document.metadata.get("plcyNo"),
-                    "dense_rank": result.original_rank,
-                    "rerank_score": result.relevance_score,
-                } for result in reranked_documents],
-            }
         return {
             **planner_output,
             **hybrid_output,
-            **reranker_output,
             "raw_query": raw_query,
             "executed_query": query,
             "executed_queries": [query],

@@ -33,7 +33,6 @@ from src.evaluation.retrieval import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_RANK_DEPTH,
     build_policy_retriever,
-    build_retrieval_task,
     create_query_embedding_model,
     evaluate_retrieval,
     safe_experiment_name,
@@ -41,7 +40,6 @@ from src.evaluation.retrieval import (
 
 
 DEFAULT_OUTPUT_DIR = project_path("data/eval/retrieval_results")
-DEFAULT_RERANKER_BASE_URL = "http://127.0.0.1:11435"
 
 
 def add_run_arguments(parser: argparse.ArgumentParser) -> None:
@@ -62,9 +60,6 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--planner-query-cache", type=Path)
-    parser.add_argument("--reranker-model")
-    parser.add_argument("--reranker-base-url", default=DEFAULT_RERANKER_BASE_URL)
-    parser.add_argument("--reranker-timeout-seconds", type=float, default=60.0)
     parser.add_argument("--bm25-candidate-k", type=int, default=DEFAULT_HYBRID_BM25_CANDIDATE_K)
     parser.add_argument("--bm25-tokenizer", choices=("kiwi", "legacy"), default="kiwi")
     parser.add_argument("--dense-weight", type=float, default=DEFAULT_HYBRID_DENSE_WEIGHT)
@@ -122,10 +117,8 @@ def parse_args() -> argparse.Namespace:
             parser.error("--bm25-candidate-k는 --rank-depth 이상이어야 합니다.")
         if not 0 <= args.dense_weight <= 1:
             parser.error("--dense-weight는 0과 1 사이여야 합니다.")
-        if args.planner_query_cache or args.reranker_model:
-            parser.error("Planner/reranker 실험은 현재 local run에서 지원하지 않습니다.")
-        if args.reranker_model and args.retrieval_mode != "dense":
-            parser.error("reranker 실험은 dense 모드에서만 지원합니다.")
+        if args.planner_query_cache:
+            parser.error("Planner 실험은 현재 local run에서 지원하지 않습니다.")
     else:
         if args.rank_depth < 1 or args.bm25_candidate_k < args.rank_depth:
             parser.error("sweep 후보 깊이는 rank depth 이상이어야 합니다.")
