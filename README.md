@@ -176,9 +176,7 @@ Docker), 방화벽, 배포용 서비스 계정, Workload Identity Federation을 
 GitHub Secrets에 넣을 값을 출력합니다. 방화벽은 **80만** 외부에 열고 SSH(22)는
 IAP 터널 대역만 허용하므로, 배포도 접속도 `--tunnel-through-iap`로 들어갑니다.
 
-VM에는 `.env`와 `data/`를 한 번 올려야 합니다. `.env`는 로컬과 같은 API 키에
-`IMAGE_REPOSITORY`를 더한 것입니다.
-
+이어서 `.env`를 올립니다. 로컬 `.env`에 `IMAGE_REPOSITORY`를 더한 것입니다.
 `/opt`는 root 소유이므로 홈으로 올린 뒤 옮깁니다.
 
 ```bash
@@ -186,26 +184,46 @@ VM=youth-policy-rag ZONE=asia-northeast3-a
 TUNNEL="--zone $ZONE --tunnel-through-iap"
 
 gcloud compute scp .env $VM:~/app.env $TUNNEL
-gcloud compute scp --recurse data/chroma data/raw $VM:~/ $TUNNEL
 gcloud compute ssh $VM $TUNNEL --command '
-  sudo install -m 600 ~/app.env /opt/youth-policy-rag/.env
-  sudo cp -r ~/chroma ~/raw /opt/youth-policy-rag/data/
-  rm -rf ~/app.env ~/chroma ~/raw
+  sudo install -m 600 ~/app.env /opt/youth-policy-rag/.env && rm ~/app.env
 '
 ```
+
+`data/`는 옮기지 않습니다. **VM이 직접 만듭니다.** `scripts/`가 API 이미지에
+들어 있고 `data/`가 볼륨으로 마운트되므로, 원본 수집과 Chroma 적재를 서버에서
+실행하면 됩니다. 인덱스를 로컬에서 만들어 올릴 이유가 없습니다.
+
+```bash
+gcloud compute ssh $VM $TUNNEL --command '
+  cd /opt/youth-policy-rag
+  sudo docker compose -f compose.gcp.yaml run --rm --no-deps api \
+    uv run --no-sync python scripts/sync_policies.py --snapshot-only
+  sudo docker compose -f compose.gcp.yaml run --rm --no-deps api \
+    uv run --no-sync python scripts/ingest_chroma.py \
+      --provider upstage --model solar-embedding-1-large-passage \
+      --chroma-dir data/chroma --recreate
+'
+```
+
+**순서를 지켜야 합니다 — 데이터가 먼저, 배포가 나중입니다.** 문서가 0건이면
+`BM25DocumentIndex`가 기동 시점에 예외를 던져 컨테이너가 재시작 루프에 빠집니다.
+빈 인덱스로 조용히 서빙하는 것보다 낫지만, 그래서 첫 배포는 위 두 명령을 끝낸
+뒤에 돌려야 합니다. `docker compose run`은 서버 기동 경로를 타지 않으므로
+데이터가 없는 상태에서도 정상 동작합니다.
 
 `data/sqlite`는 비워 둡니다. 앱이 기동할 때 스키마를 만듭니다.
 
 ### 배포 서버에서 정책 갱신
 
-`scripts/`가 API 이미지에 포함되어 있으므로 동기화는 VM에서 실행합니다.
-`data/`가 컨테이너에 마운트되어 있어 결과가 그대로 반영됩니다.
+같은 방식으로 동기화를 실행합니다. 되돌릴 수 없는 작업이므로
+`--limit-test`(연결 확인) → `--dry-run`(변경 규모 확인) → 실제 실행 순서를
+권장합니다.
 
 ```bash
 gcloud compute ssh $VM $TUNNEL --command '
   cd /opt/youth-policy-rag
-  sudo docker compose -f compose.gcp.yaml run --rm api \
-    uv run --no-sync python scripts/sync_policies.py
+  sudo docker compose -f compose.gcp.yaml run --rm --no-deps api \
+    uv run --no-sync python scripts/sync_policies.py --dry-run
 '
 ```
 
