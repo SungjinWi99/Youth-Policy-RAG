@@ -1,0 +1,39 @@
+name: Sync Policies
+
+
+on:
+  schedule:
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+
+env:
+  GCP_REGION: asia-northeast3
+  GCP_ZONE: asia-northeast3-a
+  VM_NAME: youth-policy-rag
+  APP_DIR: /opt/youth-policy-rag
+
+jobs:
+  sync-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+      id-token: write
+    
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Sync policies on the VM
+        run: |
+          gcloud compute ssh ${{ env.VM_NAME }} \
+            --zone ${{ env.GCP_ZONE }} --tunnel-through-iap --command '
+              set -eu
+              cd ${{ env.APP_DIR }}
+              sudo docker compose -f compose.gcp.yaml run --rm --no-deps api \
+                uv run --no-sync python scripts/sync_policies.py'
