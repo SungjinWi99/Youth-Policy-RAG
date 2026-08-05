@@ -101,6 +101,13 @@ do
     --member="serviceAccount:${SA_EMAIL}" --role="$ROLE" --condition=None >/dev/null
 done
 
+# VM은 기본 Compute 서비스 계정으로 실행된다. 그 인스턴스에 SSH하려면
+# 배포 계정이 해당 서비스 계정을 actAs 할 수 있어야 한다.
+gcloud iam service-accounts add-iam-policy-binding \
+  "${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role=roles/iam.serviceAccountUser >/dev/null
+
 echo "==> Workload Identity Federation"
 gcloud iam workload-identity-pools describe "$POOL_NAME" --location=global >/dev/null 2>&1 || \
   gcloud iam workload-identity-pools create "$POOL_NAME" \
