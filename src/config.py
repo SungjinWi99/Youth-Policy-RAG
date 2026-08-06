@@ -33,9 +33,29 @@ class RetrieverConfig(BaseModel):
         raise ValueError('bm25_candidate_k must be >= search_k')
     return self
 
-class LLMConfig(BaseModel):
-  provider: Literal['google', 'openai', 'upstage', 'anthropic', 'deepseek']
+class LLMProviderConfig(BaseModel):
+  provider: Literal['google', 'openai', 'upstage', 'anthropic', 'deepseek', 'ollama']
   model: str
+  max_attempts: int = Field(default=3, ge=1, le=10)
+  retry_wait_initial: float = Field(default=1.0, gt=0)
+  retry_wait_max: float = Field(default=30.0, gt=0)
+
+  @model_validator(mode='after')
+  def validate_wait_range(self):
+    if self.retry_wait_max < self.retry_wait_initial:
+      raise ValueError('retry_wait_max must be >= retry_wait_initial')
+    return self
+
+class LLMConfig(BaseModel):
+  providers: list[LLMProviderConfig] = Field(min_length=1)
+
+  @property
+  def main(self) -> LLMProviderConfig:
+    return self.providers[0]
+
+  @property
+  def fallbacks(self) -> list[LLMProviderConfig]:
+    return self.providers[1:]
 
 class EvaluationConfig(BaseModel):
   example_path: str
