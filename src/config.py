@@ -36,7 +36,7 @@ class RetrieverConfig(BaseModel):
 class LLMProviderConfig(BaseModel):
   provider: Literal['google', 'openai', 'upstage', 'anthropic', 'deepseek', 'ollama']
   model: str
-  max_retries: int = Field(default=3, ge=0, le=10)
+  max_attempts: int = Field(default=3, ge=1, le=10)
   retry_wait_initial: float = Field(default=1.0, gt=0)
   retry_wait_max: float = Field(default=30.0, gt=0)
 

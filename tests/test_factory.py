@@ -3,8 +3,10 @@ import logging
 import pytest
 from types import SimpleNamespace
 
+from langchain_core.runnables import RunnableLambda
+
 import src.factory as factory
-from src.config import load_config
+from src.config import LLMConfig, LLMProviderConfig, load_config
 from src.factory import (
     EMBEDDING_PASSAGE_MODEL_KEY,
     EMBEDDING_PROVIDER_KEY,
@@ -213,3 +215,106 @@ def test_unreachable_internal_collection_warns_and_passes(caplog):
     # 레거시 인덱스 경고와 달리 설정값을 싣지 않는다 = 다른 경고 경로.
     assert len(caplog.records) == 1
     assert "upstage" not in caplog.text
+
+
+class _RetryableStub(Exception):
+    """RETRYABLE_EXCEPTIONS에 등록되는, timeout/5xx/rate-limit을 흉내낸 예외."""
+
+
+class _FatalStub(Exception):
+    """400 같은, 재시도해봤자 소용없는 예외를 흉내낸다."""
+
+
+def make_stub_chat_model(fail_times, exception_cls):
+    """fail_times번 exception_cls를 던진 뒤 성공하는 가짜 ChatModel.
+
+    실제 Runnable(RunnableLambda)이라 .with_retry()/.with_fallbacks()가
+    그대로 적용된다 - 진짜 API를 부르지 않고 재시도/폴백 배선만 검증한다.
+    """
+    state = {"calls": 0}
+
+    def _invoke(_input):
+        state["calls"] += 1
+        if state["calls"] <= fail_times:
+            raise exception_cls("stub failure")
+        return "ok"
+
+    return RunnableLambda(_invoke), state
+
+
+def _fallback_config(main_max_attempts=2):
+    return LLMConfig(
+        providers=[
+            LLMProviderConfig(
+                provider="deepseek",
+                model="main-model",
+                max_attempts=main_max_attempts,
+                retry_wait_initial=0.01,
+                retry_wait_max=0.01,
+            ),
+            LLMProviderConfig(
+                provider="anthropic",
+                model="fallback-model",
+                max_attempts=1,
+                retry_wait_initial=0.01,
+                retry_wait_max=0.01,
+            ),
+        ]
+    )
+
+
+def test_retryable_error_retries_then_falls_back_when_exhausted(monkeypatch):
+    monkeypatch.setitem(factory.RETRYABLE_EXCEPTIONS, "deepseek", (_RetryableStub,))
+    main_model, main_state = make_stub_chat_model(fail_times=99, exception_cls=_RetryableStub)
+    fallback_model, fallback_state = make_stub_chat_model(fail_times=0, exception_cls=_RetryableStub)
+
+    def fake_create_chat_model(provider, model_name, **kwargs):
+        return main_model if provider == "deepseek" else fallback_model
+
+    monkeypatch.setattr(factory, "create_chat_model", fake_create_chat_model)
+
+    config = _fallback_config(main_max_attempts=2)
+    llm = factory.create_chat_model_with_fallback(config)
+
+    assert llm.invoke("hi") == "ok"
+    assert main_state["calls"] == config.main.max_attempts
+    assert fallback_state["calls"] == 1
+
+
+def test_non_retryable_error_skips_retry_and_falls_back_immediately(monkeypatch):
+    monkeypatch.setitem(factory.RETRYABLE_EXCEPTIONS, "deepseek", (_RetryableStub,))
+    main_model, main_state = make_stub_chat_model(fail_times=99, exception_cls=_FatalStub)
+    fallback_model, fallback_state = make_stub_chat_model(fail_times=0, exception_cls=_RetryableStub)
+
+    def fake_create_chat_model(provider, model_name, **kwargs):
+        return main_model if provider == "deepseek" else fallback_model
+
+    monkeypatch.setattr(factory, "create_chat_model", fake_create_chat_model)
+
+    config = _fallback_config(main_max_attempts=3)
+    llm = factory.create_chat_model_with_fallback(config)
+
+    assert llm.invoke("hi") == "ok"
+    assert main_state["calls"] == 1  # retry 없이 한 번만 시도하고 바로 포기
+    assert fallback_state["calls"] == 1
+
+
+def test_all_providers_exhausted_raises(monkeypatch):
+    monkeypatch.setitem(factory.RETRYABLE_EXCEPTIONS, "deepseek", (_RetryableStub,))
+    monkeypatch.setitem(factory.RETRYABLE_EXCEPTIONS, "anthropic", (_RetryableStub,))
+    main_model, main_state = make_stub_chat_model(fail_times=99, exception_cls=_RetryableStub)
+    fallback_model, fallback_state = make_stub_chat_model(fail_times=99, exception_cls=_RetryableStub)
+
+    def fake_create_chat_model(provider, model_name, **kwargs):
+        return main_model if provider == "deepseek" else fallback_model
+
+    monkeypatch.setattr(factory, "create_chat_model", fake_create_chat_model)
+
+    config = _fallback_config(main_max_attempts=1)
+    llm = factory.create_chat_model_with_fallback(config)
+
+    with pytest.raises(_RetryableStub):
+        llm.invoke("hi")
+
+    assert main_state["calls"] == 1
+    assert fallback_state["calls"] == config.fallbacks[0].max_attempts

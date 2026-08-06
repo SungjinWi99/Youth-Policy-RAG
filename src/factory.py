@@ -99,7 +99,7 @@ def create_chat_model_with_retry(provider_config: LLMProviderConfig, **kwargs):
     )
     return llm.with_retry(
         retry_if_exception_type=RETRYABLE_EXCEPTIONS[provider_config.provider],
-        stop_after_attempt=provider_config.max_retries,
+        stop_after_attempt=provider_config.max_attempts,
         exponential_jitter_params={
             "initial": provider_config.retry_wait_initial,
             "max": provider_config.retry_wait_max,
