@@ -105,7 +105,7 @@ def make_retrieval_planner_node(
     llm: BaseChatModel,
     history_window_size: int,
 ):
-    chain = prompt | llm.with_structured_output(PlannerOutput)
+    chain = prompt | llm
 
     def build_chain_input(state: RAGGraphState) -> dict:
         return {

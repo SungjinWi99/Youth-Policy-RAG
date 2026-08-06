@@ -23,23 +23,22 @@ from src.rag.nodes.retrieval_planner import (
 )
 
 
-class FakeStructuredLlm:
-    def __init__(self, response):
-        self.response = response
-        self.schema = None
-        self.prompt_values = []
+def FakeStructuredLlm(response):
+    # nodes now receive an llm that already has with_structured_output
+    # applied upstream (in factory.py), so the fake just needs to be a
+    # Runnable that returns the canned response
+    prompt_values = []
 
-    def with_structured_output(self, schema):
-        self.schema = schema
+    def respond(prompt_value):
+        prompt_values.append(prompt_value)
+        return response
 
-        def respond(prompt_value):
-            self.prompt_values.append(prompt_value)
-            return self.response
+    async def arespond(prompt_value):
+        return respond(prompt_value)
 
-        async def arespond(prompt_value):
-            return respond(prompt_value)
-
-        return RunnableLambda(respond, afunc=arespond)
+    llm = RunnableLambda(respond, afunc=arespond)
+    llm.prompt_values = prompt_values
+    return llm
 
 
 @pytest.fixture
@@ -93,7 +92,6 @@ def test_retrieval_planner_renders_documents_profile_and_history(
     })
 
     assert result["needs_retrieval"] is False
-    assert llm.schema is PlannerOutput
     rendered = llm.prompt_values[0].to_messages()
     assert "서울 청년 월세 지원 정책입니다." in rendered[-1].content
     assert "주거지: 서울" in rendered[-1].content
@@ -212,7 +210,6 @@ def test_policy_checker_returns_reducer_friendly_checked_list(policy_document):
         "policy": policy_document,
     })
 
-    assert llm.schema is PolicyCheckerOutput
     assert result["checked_policies"] == [{
         "verdict": "direct_fit",
         "document": policy_document,

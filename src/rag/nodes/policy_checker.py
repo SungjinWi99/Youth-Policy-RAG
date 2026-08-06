@@ -75,7 +75,7 @@ class PolicyCheckerOutput(BaseModel):
 
 
 def make_policy_checker_node(llm: BaseChatModel):
-    chain = prompt | llm.with_structured_output(PolicyCheckerOutput)
+    chain = prompt | llm
 
     def build_chain_input(state: PolicyCheckerInput) -> dict:
         return {

@@ -1,4 +1,5 @@
 import logging
+from pydantic import BaseModel
 
 import anthropic
 import ollama
@@ -19,6 +20,8 @@ from src.checkpointer import create_sqlite_checkpointer
 from src.config import AppConfig, LLMConfig, LLMProviderConfig
 from src.rag.graph import PolicyRagGraph
 from src.rag.nodes import (
+    PlannerOutput,
+    PolicyCheckerOutput,
     make_answer_generator_node,
     make_policy_checker_node,
     make_policy_selector_node,
@@ -91,12 +94,18 @@ def create_chat_model(provider: str, model_name: str, **kwargs):
     return model_class(model=model_name, **kwargs)
 
 
-def create_chat_model_with_retry(provider_config: LLMProviderConfig, **kwargs):
+def create_chat_model_with_retry(
+    provider_config: LLMProviderConfig, schema: type[BaseModel] | None = None, **kwargs
+):
     llm = create_chat_model(
         provider=provider_config.provider,
         model_name=provider_config.model,
         **kwargs,
     )
+    # with_structured_output must wrap the raw chat model: RunnableRetry/
+    # RunnableWithFallbacks don't have that method, only BaseChatModel does
+    if schema is not None:
+        llm = llm.with_structured_output(schema)
     return llm.with_retry(
         retry_if_exception_type=RETRYABLE_EXCEPTIONS[provider_config.provider],
         stop_after_attempt=provider_config.max_attempts,
@@ -107,11 +116,16 @@ def create_chat_model_with_retry(provider_config: LLMProviderConfig, **kwargs):
     )
 
 
-def create_chat_model_with_fallback(config: LLMConfig, **kwargs):
-    llm = create_chat_model_with_retry(config.main, **kwargs)
+def create_chat_model_with_fallback(
+    config: LLMConfig, schema: type[BaseModel] | None = None, **kwargs
+):
+    llm = create_chat_model_with_retry(config.main, schema=schema, **kwargs)
     if config.fallbacks:
         llm = llm.with_fallbacks(
-            [create_chat_model_with_retry(fallback, **kwargs) for fallback in config.fallbacks]
+            [
+                create_chat_model_with_retry(fallback, schema=schema, **kwargs)
+                for fallback in config.fallbacks
+            ]
         )
     return llm
 
@@ -231,16 +245,18 @@ def build_rag_graph(
         policy_retriever = dense_retriever
 
     llm = create_chat_model_with_fallback(config.llm)
+    planner_llm = create_chat_model_with_fallback(config.llm, schema=PlannerOutput)
+    checker_llm = create_chat_model_with_fallback(config.llm, schema=PolicyCheckerOutput)
     checkpointer = create_sqlite_checkpointer(
         config.path(config.data.conversation_db)
     )
     return PolicyRagGraph(
         retrieval_planner=make_retrieval_planner_node(
-            llm,
+            planner_llm,
             config.rag.planner.history_window,
         ),
         retriever=make_retriever_node(policy_retriever),
-        policy_checker=make_policy_checker_node(llm),
+        policy_checker=make_policy_checker_node(checker_llm),
         policy_selector=make_policy_selector_node(),
         answer_generator=make_answer_generator_node(
             llm,

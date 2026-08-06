@@ -13,6 +13,7 @@ from src.factory import (
     create_chat_model,
     verify_embedding_consistency,
 )
+from src.rag.nodes import PlannerOutput
 from src.rag.retrievers import EnsemblePolicyRetriever
 
 
@@ -39,7 +40,9 @@ def patch_factory_dependencies(monkeypatch, vector_store):
         ),
     )
     monkeypatch.setattr(
-        factory, "create_chat_model_with_fallback", lambda config: object()
+        factory,
+        "create_chat_model_with_fallback",
+        lambda config, schema=None: object(),
     )
     monkeypatch.setattr(
         factory,
@@ -318,3 +321,23 @@ def test_all_providers_exhausted_raises(monkeypatch):
 
     assert main_state["calls"] == 1
     assert fallback_state["calls"] == config.fallbacks[0].max_attempts
+
+
+class _FakeStructuredChatModel:
+    """RunnableRetry/RunnableWithFallbacks have no with_structured_output -
+    only a raw chat model does. This stub catches a regression where schema
+    gets applied after retry/fallback wrapping instead of before."""
+
+    def with_structured_output(self, schema):
+        return RunnableLambda(lambda _input: schema)
+
+
+def test_schema_is_applied_before_retry_and_fallback_wrapping(monkeypatch):
+    monkeypatch.setattr(
+        factory, "create_chat_model", lambda provider, model_name, **kwargs: _FakeStructuredChatModel()
+    )
+
+    config = _fallback_config()
+    llm = factory.create_chat_model_with_fallback(config, schema=PlannerOutput)
+
+    assert llm.invoke("hi") is PlannerOutput
