@@ -14,6 +14,7 @@ from src.factory import build_rag_graph
 from src.langfeather_runtime import create_langfeather_runtime
 from src.rag.retrievers import run_bm25_refresh
 from src.session.cleanup import run_expired_session_cleanup
+from src.session.rate_limit import TokenBucketLimiter
 
 load_dotenv()
 config = load_config()
@@ -38,6 +39,14 @@ async def lifespan(app: FastAPI):
         rag_graph.graph = langfeather_runtime.wrap_graph(rag_graph.graph)
         app.state.rag_graph = rag_graph
         app.state.langfeather_runtime = langfeather_runtime
+        # 유료 LLM API 남용 방지. 단일 워커 전제로 in-memory에 둔다
+        # (워커를 늘리면 워커마다 카운터가 따로 생겨 무력화된다).
+        app.state.chat_rate_limiter = TokenBucketLimiter(
+            capacity=5, refill_period_seconds=30
+        )
+        app.state.session_create_rate_limiter = TokenBucketLimiter(
+            capacity=5, refill_period_seconds=720
+        )
         cleanup_task = asyncio.create_task(
             run_expired_session_cleanup(rag_graph)
         )

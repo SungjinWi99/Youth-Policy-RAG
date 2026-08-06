@@ -1,16 +1,20 @@
 import logging
+from math import ceil
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
 from src.dependencies import (
+    get_chat_rate_limiter,
     get_db,
     get_langfeather_runtime,
     get_rag_graph,
+    get_session_create_rate_limiter,
 )
 from src.langfeather_runtime import LangFeatherRuntime
 from src.rag.graph import PolicyRagGraph
+from src.session.rate_limit import TokenBucketLimiter, client_ip
 from src.session.models import (
     PROFILE_FIELD_NAMES,
     AnonymousSession,
@@ -46,6 +50,14 @@ logger = logging.getLogger(__name__)
 session_router = APIRouter(tags=["web"])
 
 
+def _rate_limit_exceeded(retry_after: float, detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail=detail,
+        headers={"Retry-After": str(ceil(retry_after))},
+    )
+
+
 def _public_profile(session: AnonymousSession) -> PublicProfile:
     return PublicProfile.model_validate(
         session.model_dump(
@@ -74,6 +86,9 @@ def start_anonymous_session(
     response: Response,
     db: Session = Depends(get_db),
     rag: PolicyRagGraph = Depends(get_rag_graph),
+    session_create_rate_limiter: TokenBucketLimiter = Depends(
+        get_session_create_rate_limiter
+    ),
 ) -> SessionStatus:
     cleanup_expired_sessions(db, rag)
     existing = find_session(request, db)
@@ -88,6 +103,10 @@ def start_anonymous_session(
         if token:
             set_session_cookie(response, token)
         return _session_status(session)
+
+    allowed, retry_after = session_create_rate_limiter.try_consume(client_ip(request))
+    if not allowed:
+        raise _rate_limit_exceeded(retry_after, "세션 생성 요청이 너무 많습니다. 잠시 후 다시 시도해주세요.")
 
     token, session = create_session(profile_update, db)
     set_session_cookie(response, token)
@@ -141,7 +160,12 @@ async def stream_session_answer(
     session: AnonymousSession = Depends(get_current_session),
     rag: PolicyRagGraph = Depends(get_rag_graph),
     langfeather_runtime: LangFeatherRuntime = Depends(get_langfeather_runtime),
+    chat_rate_limiter: TokenBucketLimiter = Depends(get_chat_rate_limiter),
 ) -> StreamingResponse:
+    allowed, retry_after = chat_rate_limiter.try_consume(session.token_hash)
+    if not allowed:
+        raise _rate_limit_exceeded(retry_after, "요청이 너무 많습니다. 잠시 후 다시 시도해주세요.")
+
     # stream_answer는 async generator라 호출만으로는 본문이 실행되지 않는다.
     # 여기서 잡히는 것은 스트림 시작 전 실패뿐이고(아직 응답 헤더가 안 나갔으므로
     # 500으로 알릴 수 있다), 스트리밍 중 실패는 stream_answer 안에서

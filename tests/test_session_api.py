@@ -7,6 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from src.dependencies import get_db, get_langfeather_runtime, get_rag_graph
 from src.session.models import AnonymousSession
+from src.session.rate_limit import TokenBucketLimiter
 from src.session.router import session_router
 
 
@@ -70,6 +71,10 @@ def build_client():
     app = FastAPI()
     app.state.rag_graph = rag
     app.state.langfeather_runtime = langfeather_runtime
+    app.state.chat_rate_limiter = TokenBucketLimiter(capacity=5, refill_period_seconds=30)
+    app.state.session_create_rate_limiter = TokenBucketLimiter(
+        capacity=5, refill_period_seconds=720
+    )
     app.include_router(session_router)
 
     def override_db():
