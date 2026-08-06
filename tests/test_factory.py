@@ -36,7 +36,9 @@ def patch_factory_dependencies(monkeypatch, vector_store):
             search_k=search_k,
         ),
     )
-    monkeypatch.setattr(factory, "create_chat_model", lambda **kwargs: object())
+    monkeypatch.setattr(
+        factory, "create_chat_model_with_fallback", lambda config: object()
+    )
     monkeypatch.setattr(
         factory,
         "make_retrieval_planner_node",

@@ -1,5 +1,9 @@
 import logging
 
+import anthropic
+import ollama
+import openai
+from google.genai import errors as genai_errors
 from langchain_chroma import Chroma
 from langchain_google_genai import (
     ChatGoogleGenerativeAI,
@@ -12,7 +16,7 @@ from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_deepseek import ChatDeepSeek
 
 from src.checkpointer import create_sqlite_checkpointer
-from src.config import AppConfig
+from src.config import AppConfig, LLMConfig, LLMProviderConfig
 from src.rag.graph import PolicyRagGraph
 from src.rag.nodes import (
     make_answer_generator_node,
@@ -38,6 +42,31 @@ CHAT_MODEL_CLASSES = {
     "deepseek": ChatDeepSeek,
 }
 
+# provider-side failures worth retrying (timeout/5xx/rate-limit), never
+# client errors like a bad prompt (400) or bad credentials (401)
+_OPENAI_COMPATIBLE_RETRYABLE = (
+    openai.RateLimitError,
+    openai.InternalServerError,
+    openai.APITimeoutError,
+    openai.APIConnectionError,
+)
+RETRYABLE_EXCEPTIONS = {
+    "openai": _OPENAI_COMPATIBLE_RETRYABLE,
+    "upstage": _OPENAI_COMPATIBLE_RETRYABLE,
+    "deepseek": _OPENAI_COMPATIBLE_RETRYABLE,
+    "anthropic": (
+        anthropic.RateLimitError,
+        anthropic.InternalServerError,
+        anthropic.APITimeoutError,
+        anthropic.APIConnectionError,
+    ),
+    "google": (genai_errors.ServerError,),
+    # ponytail: ollama's SDK has no 4xx/5xx split like the others, so this
+    # also retries on bad requests; narrow it with a status_code check if
+    # that turns out to be wasteful in practice
+    "ollama": (ollama.RequestError, ollama.ResponseError),
+}
+
 EMBEDDING_MODEL_CLASSES = {
     "google": GoogleGenerativeAIEmbeddings,
     "openai": OpenAIEmbeddings,
@@ -60,6 +89,31 @@ def create_chat_model(provider: str, model_name: str, **kwargs):
         extra_body.setdefault("thinking", {"type": "disabled"})
         kwargs["extra_body"] = extra_body
     return model_class(model=model_name, **kwargs)
+
+
+def create_chat_model_with_retry(provider_config: LLMProviderConfig, **kwargs):
+    llm = create_chat_model(
+        provider=provider_config.provider,
+        model_name=provider_config.model,
+        **kwargs,
+    )
+    return llm.with_retry(
+        retry_if_exception_type=RETRYABLE_EXCEPTIONS[provider_config.provider],
+        stop_after_attempt=provider_config.max_retries,
+        exponential_jitter_params={
+            "initial": provider_config.retry_wait_initial,
+            "max": provider_config.retry_wait_max,
+        },
+    )
+
+
+def create_chat_model_with_fallback(config: LLMConfig, **kwargs):
+    llm = create_chat_model_with_retry(config.main, **kwargs)
+    if config.fallbacks:
+        llm = llm.with_fallbacks(
+            [create_chat_model_with_retry(fallback, **kwargs) for fallback in config.fallbacks]
+        )
+    return llm
 
 
 def create_embedding_model(provider: str, model_name: str, **kwargs):
@@ -176,10 +230,7 @@ def build_rag_graph(
     else:
         policy_retriever = dense_retriever
 
-    llm = create_chat_model(
-        provider=config.llm.provider,
-        model_name=config.llm.model,
-    )
+    llm = create_chat_model_with_fallback(config.llm)
     checkpointer = create_sqlite_checkpointer(
         config.path(config.data.conversation_db)
     )

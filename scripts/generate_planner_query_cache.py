@@ -68,8 +68,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET_PATH)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
-    parser.add_argument("--provider", default=config.llm.provider)
-    parser.add_argument("--model", default=config.llm.model)
+    parser.add_argument("--provider", default=config.llm.main.provider)
+    parser.add_argument("--model", default=config.llm.main.model)
     parser.add_argument("--max-attempts", type=int, default=3)
     args = parser.parse_args()
     if args.max_attempts < 1:
