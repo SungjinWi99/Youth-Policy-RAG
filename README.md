@@ -3,10 +3,6 @@
 온통청년 OpenAPI의 청년정책 데이터를 수집하고, 사용자 프로필을 반영해 관련
 정책을 검색·안내하는 RAG(Retrieval-Augmented Generation) 시스템입니다.
 
-정책 문서를 그냥 검색해서 붙여주는 대신, **검색한 정책이 이 사용자에게 정말
-해당되는지 LLM이 한 번 더 검수하고, 통과한 정책만으로 답변을 만듭니다.**
-검수를 통과한 정책이 없으면 탈락 정책을 제외하고 다시 검색합니다.
-
 - 백엔드: FastAPI + LangGraph + Chroma
 - 프론트엔드: Next.js 상담 웹서비스 ([frontend/README.md](frontend/README.md))
 - 배포: Docker Compose, GCP Compute Engine ([docs/deployment.md](docs/deployment.md))
@@ -44,36 +40,15 @@
 
 ## 시스템 구조
 
-```mermaid
-flowchart LR
-    subgraph ingest["데이터 파이프라인 (배치 실행)"]
-        YOUTH["온통청년 OpenAPI"] --> SYNC["sync_policies.py<br/>추가·변경·삭제 동기화"]
-        SYNC --> RAW[("data/raw<br/>정책 원본 JSON")]
-        RAW --> INGEST["ingest_chroma.py<br/>최초 임베딩 적재"]
-        SYNC --> CHROMA
-        INGEST --> CHROMA[("data/chroma<br/>Chroma 벡터 인덱스")]
-    end
+<p align="center">
+  <img src="./docs/images/architecture.svg" width="100%"
+       alt="main 푸시가 GitHub Actions에서 테스트와 이미지 빌드를 거쳐 Artifact Registry에 올라가고, GCP Compute Engine VM 한 대가 이미지를 받아 Docker Compose로 Caddy·Next.js·FastAPI·LangFeather 컨테이너를 띄운다. 브라우저 요청은 80 포트로 들어와 Caddy와 Next.js를 거쳐 FastAPI에 닿고, api 컨테이너 안의 LangGraph RAG가 계획·검색·검수·생성을 수행하며 Upstage 임베딩과 Chat LLM, 온통청년 OpenAPI를 호출한다. 정책 원본과 Chroma 인덱스, SQLite 두 개는 호스트 볼륨의 data 디렉터리에 남는다">
+</p>
 
-    subgraph serve["서비스 (요청 경로)"]
-        BROWSER["브라우저"] --> WEB["Next.js<br/>상담 UI · /api 프록시"]
-        WEB --> API["FastAPI<br/>세션 · 프로필 · 정책 조회"]
-        API --> RAG["LangGraph RAG"]
-        API --> SESSDB[("data/sqlite<br/>익명 세션 · 프로필")]
-        RAG --> CKPT[("data/sqlite<br/>대화 checkpoint")]
-    end
-
-    API -->|정책 상세 조회| RAW
-    RAG -->|hybrid 검색| CHROMA
-    RAG --> LLM["Chat LLM<br/>DeepSeek → Anthropic → OpenAI"]
-    RAG -.trace.-> LF["LangFeather collector<br/>trace · 사용자 피드백"]
-```
-
-브라우저에 열리는 포트는 Next.js뿐이고, FastAPI는 내부 네트워크에서만
-접근됩니다. `data/`는 컨테이너에 넣지 않고 호스트에서 마운트하므로 컨테이너를
-교체해도 검색 인덱스와 상담 기록이 유지됩니다.
-
-SQLite 두 개에 매 요청 쓰고 BM25 역색인을 프로세스 메모리에 들고 있어 **단일
-인스턴스 전제**입니다.
+브라우저에 열리는 포트는 하나(로컬은 Next.js `3000`, 배포는 Caddy `80`)뿐이고
+FastAPI는 Compose 내부 네트워크에서만 접근됩니다. SQLite 두 개에 매 요청 쓰고
+BM25 역색인을 프로세스 메모리에 들고 있어 **단일 인스턴스 전제**입니다.
+배포 절차는 [docs/deployment.md](docs/deployment.md)에 있습니다.
 
 ### LangGraph 워크플로 구조
 
@@ -83,7 +58,6 @@ flowchart TD
     PLANNER -->|"needs_retrieval = false"| GEN
     PLANNER -->|"needs_retrieval = true"| RET["retriever<br/>metadata 필터 + hybrid 검색"]
     RET -->|"Send × N (정책별 병렬)"| CHK["policy_checker<br/>정책마다 적합성 verdict 생성"]
-    RET -->|"검색 결과 없음"| SEL
     CHK --> SEL["policy_selector<br/>direct_fit · fit_needs_clarification만 채택"]
     SEL -->|"통과 정책 있음"| GEN["answer_generator<br/>통과 정책만으로 답변 생성"]
     SEL -->|"통과 0건 · 재시도 여유 있음"| PLANNER
@@ -186,13 +160,6 @@ rag:
     history_window: 10
 ```
 
-`llm.providers`는 순서가 곧 fallback 순서입니다. 각 provider는 재시도 가능한
-오류(rate limit, timeout, 5xx)에 대해 `max_attempts`(기본 3)까지 지수 백오프로
-재시도하고, 그래도 실패하면 다음 provider로 넘어갑니다.
-
-`retriever.provider`·`passage_model`은 Chroma에 실제로 적재된 조합과 일치해야
-합니다. 다르면 서버 기동 시 `verify_embedding_consistency`가 예외를 던집니다.
-
 API 키는 `.env`에 둡니다. 필요한 키는 `config.yaml`이 지정한 provider에 따라
 달라집니다. 위 기본 설정이라면 다음과 같습니다.
 
@@ -212,11 +179,6 @@ LANGFEATHER_TRACING=true
 LANGFEATHER_ENDPOINT=http://127.0.0.1:4319
 SESSION_COOKIE_SECURE=false   # HTTPS 배포에서는 true
 ```
-
-RAG의 SSE `metadata`와 LangFeather trace는 같은 trace ID를 사용해서, 상담 화면의
-도움됐어요/아쉬워요 피드백이 해당 trace에 저장됩니다. 전송은 best-effort이므로
-collector가 꺼져 있어도 답변 생성은 계속되지만 피드백 API는 503을 반환합니다.
-로컬에서 collector가 필요하면 다음을 띄웁니다.
 
 ```bash
 docker run -d --name langfeather \
@@ -246,18 +208,6 @@ uv run python -m scripts.sync_policies --dry-run
 uv run python -m scripts.sync_policies
 ```
 
-API 응답을 정답으로 삼아 신규 정책 추가, 내용이 바뀐 정책 재적재, API에서 사라진
-정책 삭제를 모두 반영합니다. 재적재 판정은 실제 임베딩 문서(본문 + metadata)
-기준이라 조회수처럼 문서에 들어가지 않는 필드만 바뀐 정책은 다시 임베딩하지
-않습니다.
-
-삭제 대상이 원본의 5%(최소 20건)를 넘으면 API 응답 이상을 의심해 변경 없이
-중단합니다. 의도한 삭제라면 `--allow-deletions`를 붙입니다. 중간에 실패해도 원본
-JSON이 그대로 남아, 다시 실행하면 남은 작업만 마저 반영합니다.
-
-동기화 후 서버를 재시작할 필요는 없습니다. API 서버가 원본 JSON의 mtime 변경을
-감지해 BM25 인덱스를 백그라운드에서 다시 빌드합니다(최대 5분 지연).
-
 ### 2. Chroma 적재
 
 ```bash
@@ -285,9 +235,7 @@ uv run uvicorn main:app --reload --host 127.0.0.1 --port 8000
 - OpenAPI 스키마: `http://127.0.0.1:8000/openapi.json`
 
 기동 시 SQLite 테이블을 만들고 LangGraph RAG를 컴파일하며, 만료 세션 정리와 BM25
-새로고침 백그라운드 태스크를 띄웁니다. `/health`는 Chroma 컬렉션 접근과 문서 수만
-확인합니다(외부 provider를 찌르지 않아 provider 지연이 컨테이너 재시작으로
-번지지 않습니다). 문서가 0건이면 503입니다.
+새로고침 백그라운드 태스크를 띄웁니다.
 
 ### Next.js 프론트엔드
 
@@ -320,9 +268,7 @@ npm run dev
 분기 규칙:
 
 - `needs_retrieval=false`면 검색을 건너뜁니다. 활성 정책 재사용, 단순 인사, 이미
-  답한 내용의 확인이 여기에 해당합니다. 활성 정책의 신청 방법·서류·일정 같은
-  후속 질문도, 그 정보가 문서에 없더라도 재검색하지 않습니다(한 정책이 문서 하나에
-  대응하므로 상세정보 부족은 다른 문서를 찾을 이유가 아닙니다).
+  답한 내용의 확인이 여기에 해당합니다.
 - 통과 정책이 0건이면 `indirect`·`mismatch` 정책을 다음 검색에서 제외하고
   `max_retries`(기본 3, 최초 검색 포함 최대 4회)까지 재검색합니다. Query는 탈락
   사유상 검색 방향을 바꿀 필요가 있을 때만 Planner가 변경합니다.
@@ -349,11 +295,6 @@ state는 `src/rag/state.py`에 정의돼 있습니다. `retrieved_policies`는 �
 | `POST` | `/me/feedback` | 답변 피드백 저장 (LangFeather trace에 기록) |
 | `DELETE` | `/me/conversation` | 현재 상담 기록 초기화 |
 | `DELETE` | `/me/data` | 프로필·상담·익명 세션 전체 삭제 |
-
-유료 LLM 남용을 막기 위해 토큰 버킷 rate limit이 걸려 있습니다. `/me/chat`은
-세션당 버스트 5회 + 30초당 1회 회복, 세션 생성은 IP당 버스트 5회 + 12분당 1회
-회복입니다. 초과하면 `Retry-After` 헤더와 함께 429를 반환합니다. 버킷은
-in-memory라 워커를 늘리면 상한이 워커 수만큼 곱해집니다(단일 워커 전제).
 
 익명 세션을 만들고 쿠키를 저장합니다.
 
