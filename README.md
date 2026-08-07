@@ -3,101 +3,137 @@
 온통청년 OpenAPI의 청년정책 데이터를 수집하고, 사용자 프로필을 반영해 관련
 정책을 검색·안내하는 RAG(Retrieval-Augmented Generation) 시스템입니다.
 
+정책 문서를 그냥 검색해서 붙여주는 대신, **검색한 정책이 이 사용자에게 정말
+해당되는지 LLM이 한 번 더 검수하고, 통과한 정책만으로 답변을 만듭니다.**
+검수를 통과한 정책이 없으면 탈락 정책을 제외하고 다시 검색합니다.
+
+- 백엔드: FastAPI + LangGraph + Chroma
+- 프론트엔드: Next.js 상담 웹서비스 ([frontend/README.md](frontend/README.md))
+- 배포: Docker Compose, GCP Compute Engine ([docs/deployment.md](docs/deployment.md))
+
 ## 주요 기능
 
-- 온통청년 OpenAPI 청년정책 데이터 수집
-- Chroma 기반 semantic search
-- 사용자 프로필 기반 metadata filtering
-- 정책 신청 방법, 기간, 자격 조건 등 상세 metadata를 포함한 답변 생성
-- LangGraph `StateGraph` 기반 Retrieval Planner·검색·검수·생성 워크플로
-- 현재 질문, 대화 기록, 활성 문서를 바탕으로 한 검색/재사용 분기
-- `Send`를 이용한 검색 문서별 Policy Checker 병렬 평가
-- 명시적인 정책 적합성 verdict와 최대 3회 재검색
-- 탈락 정책을 제외한 동일 Query 재사용 또는 필요 시 의미 기반 Query 변경
-- Checker를 통과한 정책만 사용하는 답변 생성
-- 익명 세션 행에 프로필·대화 스레드를 함께 보관
-- FastAPI SSE 스트리밍 응답
-- 세션 기반 사용자 프로필 관리
-- 정책 ID 기반 원본 정책 상세 조회 API
-- Next.js 기반 실서비스형 상담 프론트엔드
-- 서버 발급 익명 세션, 30일 보존, 프로필·상담 기록 삭제
-- 답변 근거 정책을 표시하는 활성 정책 카드
-- 로컬 evaluator를 이용한 RAG 품질 평가
+**정책 데이터**
+
+- 온통청년 OpenAPI 수집과 추가·변경·삭제 동기화(`sync_policies`)
+- 신청 방법·기간·자격 조건 등을 metadata로 함께 보관해 답변에 사용
+
+**검색**
+
+- Chroma dense 검색 + Kiwi 형태소 BM25의 weighted RRF hybrid 검색
+- 연령·지역·신청기간은 metadata 하드 필터, 소득은 Checker가 판단
+
+**답변 생성 (LangGraph)**
+
+- Retrieval Planner가 매 턴 검색 필요 여부와 검색 Query를 결정
+- `Send`로 검색된 정책마다 Policy Checker를 병렬 실행해 적합성 verdict 생성
+- 검수 통과 정책이 없으면 탈락 정책을 제외하고 최대 3회까지 재검색
+- LLM provider 실패 시 retry → 다른 provider로 fallback
+
+**웹 서비스**
+
+- 서버 발급 익명 세션(30일)에 프로필과 대화 스레드를 함께 보관
+- SSE 스트리밍 응답(`status` / `metadata` / `chunk` / `done`)
+- 답변 근거 정책 카드, 프로필·상담 기록 삭제
+- LLM 비용 남용을 막는 토큰 버킷 rate limit
+- LangFeather로 trace와 사용자 피드백 수집
+
+**평가**
+
+- 로컬 LLM judge 기반 RAG 품질 평가와 retrieval 실험 스크립트
 
 ## 시스템 구조
 
 ```mermaid
 flowchart LR
-    API["온통청년 OpenAPI"] --> RAW["정책 원본 JSON"]
-    API --> SYNC["sync_policies.py<br/>추가·변경·삭제 동기화"]
-    SYNC --> RAW
-    SYNC --> CHROMA
-    RAW --> INGEST["ingest_chroma.py"]
-    INGEST --> CHROMA["Chroma Vector Store"]
+    subgraph ingest["데이터 파이프라인 (배치 실행)"]
+        YOUTH["온통청년 OpenAPI"] --> SYNC["sync_policies.py<br/>추가·변경·삭제 동기화"]
+        SYNC --> RAW[("data/raw<br/>정책 원본 JSON")]
+        RAW --> INGEST["ingest_chroma.py<br/>최초 임베딩 적재"]
+        SYNC --> CHROMA
+        INGEST --> CHROMA[("data/chroma<br/>Chroma 벡터 인덱스")]
+    end
 
-    CLIENT["Next.js / API Client"] --> FASTAPI["FastAPI"]
-    FASTAPI --> USERDB["SQLite Session / Profile"]
-    FASTAPI --> GRAPH["LangGraph RAG"]
-    GRAPH --> PLANNER["Retrieval Planner<br/>requirement + query"]
-    PLANNER -->|"needs_retrieval=true"| RETRIEVE["retriever node"]
-    PLANNER -->|"needs_retrieval=false"| GENERATOR["Answer Generator"]
-    RETRIEVE --> CHROMA
-    RETRIEVE --> SEND["Send: 정책별 병렬 fan-out"]
-    SEND --> CHECKER["Policy Checker"]
-    CHECKER --> SELECTOR["Verdict selector"]
-    SELECTOR -->|"통과 정책 있음"| GENERATOR
-    SELECTOR -->|"통과 정책 없음 / retry 가능"| PLANNER
-    GENERATOR --> LLM["Chat Model"]
-    GRAPH --> SSE["SSE metadata / chunks"]
+    subgraph serve["서비스 (요청 경로)"]
+        BROWSER["브라우저"] --> WEB["Next.js<br/>상담 UI · /api 프록시"]
+        WEB --> API["FastAPI<br/>세션 · 프로필 · 정책 조회"]
+        API --> RAG["LangGraph RAG"]
+        API --> SESSDB[("data/sqlite<br/>익명 세션 · 프로필")]
+        RAG --> CKPT[("data/sqlite<br/>대화 checkpoint")]
+    end
 
-    EVALDATA["Evaluation JSONL"] --> EVALRUN["Local RAG Evaluation"]
-    EVALRUN --> GRAPH
+    API -->|정책 상세 조회| RAW
+    RAG -->|hybrid 검색| CHROMA
+    RAG --> LLM["Chat LLM<br/>DeepSeek → Anthropic → OpenAI"]
+    RAG -.trace.-> LF["LangFeather collector<br/>trace · 사용자 피드백"]
 ```
+
+브라우저에 열리는 포트는 Next.js뿐이고, FastAPI는 내부 네트워크에서만
+접근됩니다. `data/`는 컨테이너에 넣지 않고 호스트에서 마운트하므로 컨테이너를
+교체해도 검색 인덱스와 상담 기록이 유지됩니다.
+
+SQLite 두 개에 매 요청 쓰고 BM25 역색인을 프로세스 메모리에 들고 있어 **단일
+인스턴스 전제**입니다.
+
+### LangGraph 워크플로 구조
+
+```mermaid
+flowchart TD
+    BEGIN([START]) --> PLANNER["retrieval_planner<br/>요구 정리 · 검색 필요 판단 · Query 작성"]
+    PLANNER -->|"needs_retrieval = false"| GEN
+    PLANNER -->|"needs_retrieval = true"| RET["retriever<br/>metadata 필터 + hybrid 검색"]
+    RET -->|"Send × N (정책별 병렬)"| CHK["policy_checker<br/>정책마다 적합성 verdict 생성"]
+    RET -->|"검색 결과 없음"| SEL
+    CHK --> SEL["policy_selector<br/>direct_fit · fit_needs_clarification만 채택"]
+    SEL -->|"통과 정책 있음"| GEN["answer_generator<br/>통과 정책만으로 답변 생성"]
+    SEL -->|"통과 0건 · 재시도 여유 있음"| PLANNER
+    SEL -->|"재시도 소진"| GEN
+    GEN --> FINISH([END])
+```
+
+각 노드가 하는 일은 [애플리케이션 실행 > LangGraph 워크플로](#langgraph-워크플로)에
+정리했습니다.
 
 ## 프로젝트 구조
 
 ```text
 .
-├── config.yaml                    # 모델, 저장소, 평가 설정
-├── main.py                        # FastAPI 애플리케이션
+├── config.yaml                    # 모델, 검색, 저장소, 평가 설정
+├── main.py                        # FastAPI 애플리케이션 (lifespan, /health)
+├── compose.yaml, Dockerfile       # 로컬·배포 공통 컨테이너 정의
 ├── frontend/                      # Next.js 상담 웹서비스
 ├── deploy/                        # GCP 배포 (Compose·Caddy·부트스트랩 스크립트)
+├── docs/
+│   └── deployment.md              # Docker Compose · GCP 배포 가이드
 ├── data/
-│   ├── raw/                       # OpenAPI 원본 데이터
+│   ├── raw/                       # OpenAPI 원본 정책 JSON
 │   ├── chroma/                    # Chroma 영속 데이터
-│   ├── sqlite/                    # 사용자 프로필 DB, 대화 checkpoint DB
-│   └── eval/                      # 평가 데이터셋 JSONL
+│   ├── sqlite/                    # 세션·프로필 DB, 대화 checkpoint DB
+│   └── eval/                      # 평가 데이터셋과 실험 결과
 ├── scripts/
 │   ├── sync_policies.py           # 정책 수집 및 원본·Chroma 동기화
 │   ├── ingest_chroma.py           # 문서 임베딩 및 Chroma 적재
 │   ├── generate_eval_dataset.py   # 평가 데이터 생성
-│   ├── generate_planner_query_cache.py # Planner query 고정
-│   ├── evaluate_retrieval.py      # local retrieval 평가
-│   └── evaluate_rag.py            # local RAG 평가 실행
+│   ├── generate_planner_query_cache.py # 실험용 Planner query 고정
+│   ├── evaluate_retrieval.py      # retrieval 평가 (dense·BM25·hybrid)
+│   ├── evaluate_rag.py            # end-to-end RAG 품질 평가
+│   └── rerun_failed_answer_cases.py # 실패 사례 회귀 재실행
 ├── src/
-│   ├── evaluation/                # 평가 스키마, 지표, 실험 로직
-│   ├── session/                   # 익명 세션 행과 프로필·대화 API
-│   ├── policy/                    # 정책 상세 조회 모델과 API
-│   ├── rag/
-│   │   ├── graph.py               # LangGraph workflow와 public API
-│   │   ├── nodes/
-│   │   │   ├── retrieval_planner.py # 검색 여부·사용자 요구·검색 질의 계획
-│   │   │   ├── retriever.py       # 사용자 조건 기반 정책 검색
-│   │   │   ├── policy_checker.py  # 문서별 적합도 병렬 평가
-│   │   │   ├── policy_selector.py # verdict 기반 정책 선택
-│   │   │   └── answer_generator.py # 검수된 정책 기반 답변 생성
-│   │   ├── retrievers/
-│   │   │   ├── dense_retriever.py # Chroma dense 검색
-│   │   │   ├── bm25_retriever.py  # Kiwi BM25 검색
-│   │   │   └── ensemble_retriever.py # weighted RRF hybrid 검색
-│   │   ├── state.py               # graph state schema
-│   │   └── utils.py               # context와 사용자 프로필 포맷
-│   ├── config.py                  # config.yaml 로더
+│   ├── config.py                  # config.yaml 로더 (pydantic 검증)
+│   ├── factory.py                 # 모델·retriever·graph 조립, 임베딩 정합성 검증
 │   ├── database.py                # SQLite engine과 session
-│   ├── dependencies.py            # FastAPI dependencies
-│   ├── eval.py                    # 평가 데이터 검증 및 evaluator
 │   ├── checkpointer.py            # SQLite LangGraph checkpointer
-│   └── factory.py                 # 모델·RAG factory, 임베딩 정합성 검증
+│   ├── dependencies.py            # FastAPI dependencies
+│   ├── langfeather_runtime.py     # trace·피드백 전송 런타임
+│   ├── rag/
+│   │   ├── graph.py               # StateGraph 조립, invoke/stream API
+│   │   ├── state.py               # graph state schema, verdict 정의
+│   │   ├── nodes/                 # planner · retriever · checker · selector · generator
+│   │   ├── retrievers/            # dense · BM25(Kiwi) · RRF ensemble · metadata filter
+│   │   └── utils.py               # context·프로필 포맷
+│   ├── session/                   # 익명 세션, 프로필, 채팅 API, rate limit, 만료 정리
+│   ├── policy/                    # 정책 수집·적재·상세 조회
+│   └── evaluation/                # 평가 스키마, 지표, 실험 로직
 └── tests/
 ```
 
@@ -109,131 +145,11 @@ flowchart LR
 uv sync
 ```
 
-명령은 가상환경을 활성화하지 않고 실행합니다.
+가상환경을 활성화하지 않고 `uv run`으로 실행합니다.
 
 ```bash
 uv run python -m scripts.sync_policies --limit-test
 uv run uvicorn main:app --reload
-```
-
-## Docker Compose 실행
-
-`langfeather` PyPI 패키지를 API 이미지가 그대로 포함하고, collector는 같은
-Compose 프로젝트의 `langfeather` 서비스로 함께 뜹니다 (API 컨테이너와 네트워크
-네임스페이스를 공유). API 추적은 기본으로 활성화되며, 대시보드는
-`http://127.0.0.1:4319`에서 확인합니다. LangFeather를 잠시 끄려면
-`LANGFEATHER_TRACING=false docker compose up -d --build`를 사용합니다.
-
-FastAPI와 Next.js를 각각 컨테이너로 실행합니다. 브라우저에는 Next.js의
-`3000` 포트만 공개되고, FastAPI는 Compose 내부 네트워크에서만 접근됩니다.
-
-먼저 정책 원본, Chroma 인덱스, SQLite DB가 들어 있는 `data/` 디렉터리를
-배포 대상에 준비합니다. 이 디렉터리는 컨테이너에 포함하지 않고 호스트에서
-마운트하므로, 컨테이너를 교체해도 검색 인덱스와 상담 기록이 유지됩니다.
-
-```bash
-cp .env.example .env
-# .env에 현재 config.yaml이 사용하는 API 키를 입력합니다.
-docker compose up --build -d
-docker compose logs -f api
-```
-
-상담 화면은 기본적으로 `http://localhost:3000`에서 엽니다. 해당 포트를 다른
-서비스가 사용 중이면 `.env`에 `WEB_PORT=3001`처럼 지정하고 해당 포트로 접속합니다.
-HTTPS 리버스 프록시 뒤에서
-운영할 때는 `.env`의 `SESSION_COOKIE_SECURE=true`로 변경합니다. 로컬 HTTP
-테스트에서는 기본값 `false`를 유지합니다.
-
-Compose 환경의 Next.js는 `BACKEND_URL=http://api:8000`으로 FastAPI 서비스에
-연결합니다. 따라서 브라우저 요청은 계속 `/api/*`의 same-origin 프록시를
-사용하며 FastAPI의 `8000` 포트를 외부에 열 필요가 없습니다.
-
-Compose는 `langfeather` collector 컨테이너(`ghcr.io/sungjinwi99/langfeather`)를
-`api`와 network namespace를 공유하도록(`network_mode: service:api`) 띄웁니다.
-LangFeather 0.2.0의 collector는 Host 헤더가 `localhost`/`127.0.0.1`이 아닌 요청을
-거부하므로, Compose service 이름(`http://langfeather:4319`)으로는 연결할 수 없습니다.
-`api` 서비스는 그래서 `LANGFEATHER_ENDPOINT=http://127.0.0.1:4319`로 loopback을
-사용합니다. Collector는 인증이 없는 single-user local-first prototype이므로
-호스트 포트는 `127.0.0.1:4319`로만 열어 외부에 노출하지 않습니다. UI를 보려면
-배포 서버로 SSH 터널을 연 뒤 `http://127.0.0.1:4319`에 접속하세요.
-
-## 배포 (GCP Compute Engine)
-
-단일 VM에 같은 Compose 스택을 띄웁니다. 이 서비스는 SQLite 두 개(세션·대화
-checkpoint)에 매 요청 쓰고 BM25 역색인을 프로세스 메모리에 들고 있어 **단일
-인스턴스 전제**입니다. `main` 푸시가 GitHub Actions에서 테스트 → 이미지 빌드 →
-Artifact Registry 푸시 → VM 재기동까지 처리합니다.
-
-인프라는 1회만 만듭니다.
-
-```bash
-gcloud auth login
-PROJECT_ID=<프로젝트ID> bash deploy/gcp-bootstrap.sh
-```
-
-스크립트가 API 활성화, Artifact Registry, 고정 IP, VM(e2-medium·Ubuntu 24.04·
-Docker), 방화벽, 배포용 서비스 계정, Workload Identity Federation을 만들고 마지막에
-GitHub Secrets에 넣을 값을 출력합니다. 방화벽은 **80만** 외부에 열고 SSH(22)는
-IAP 터널 대역만 허용하므로, 배포도 접속도 `--tunnel-through-iap`로 들어갑니다.
-
-이어서 `.env`를 올립니다. 로컬 `.env`에 `IMAGE_REPOSITORY`를 더한 것입니다.
-`/opt`는 root 소유이므로 홈으로 올린 뒤 옮깁니다.
-
-```bash
-VM=youth-policy-rag ZONE=asia-northeast3-a
-TUNNEL="--zone $ZONE --tunnel-through-iap"
-
-gcloud compute scp .env $VM:~/app.env $TUNNEL
-gcloud compute ssh $VM $TUNNEL --command '
-  sudo install -m 600 ~/app.env /opt/youth-policy-rag/.env && rm ~/app.env
-'
-```
-
-`data/`는 옮기지 않습니다. **VM이 직접 만듭니다.** `scripts/`가 API 이미지에
-들어 있고 `data/`가 볼륨으로 마운트되므로, 원본 수집과 Chroma 적재를 서버에서
-실행하면 됩니다. 인덱스를 로컬에서 만들어 올릴 이유가 없습니다.
-
-```bash
-gcloud compute ssh $VM $TUNNEL --command '
-  cd /opt/youth-policy-rag
-  sudo docker compose -f compose.gcp.yaml run --rm --no-deps api \
-    uv run --no-sync python scripts/sync_policies.py --snapshot-only
-  sudo docker compose -f compose.gcp.yaml run --rm --no-deps api \
-    uv run --no-sync python scripts/ingest_chroma.py \
-      --provider upstage --model solar-embedding-1-large-passage \
-      --chroma-dir data/chroma --recreate
-'
-```
-
-**순서를 지켜야 합니다 — 데이터가 먼저, 배포가 나중입니다.** 문서가 0건이면
-`BM25DocumentIndex`가 기동 시점에 예외를 던져 컨테이너가 재시작 루프에 빠집니다.
-빈 인덱스로 조용히 서빙하는 것보다 낫지만, 그래서 첫 배포는 위 두 명령을 끝낸
-뒤에 돌려야 합니다. `docker compose run`은 서버 기동 경로를 타지 않으므로
-데이터가 없는 상태에서도 정상 동작합니다.
-
-`data/sqlite`는 비워 둡니다. 앱이 기동할 때 스키마를 만듭니다.
-
-### 배포 서버에서 정책 갱신
-
-같은 방식으로 동기화를 실행합니다. 되돌릴 수 없는 작업이므로
-`--limit-test`(연결 확인) → `--dry-run`(변경 규모 확인) → 실제 실행 순서를
-권장합니다.
-
-```bash
-gcloud compute ssh $VM $TUNNEL --command '
-  cd /opt/youth-policy-rag
-  sudo docker compose -f compose.gcp.yaml run --rm --no-deps api \
-    uv run --no-sync python scripts/sync_policies.py --dry-run
-'
-```
-
-원본 스냅샷 교체가 끝나면 실행 중인 API가 `data/raw`의 mtime 변화를 감지해
-BM25 역색인을 백그라운드에서 재구성합니다(ISSUE-001). 재시작할 필요가 없습니다.
-
-LangFeather UI는 외부에 열려 있지 않습니다. 보려면 터널을 엽니다.
-
-```bash
-gcloud compute ssh $VM --zone $ZONE --tunnel-through-iap -- -L 4319:127.0.0.1:4319
 ```
 
 ## 설정
@@ -242,115 +158,105 @@ gcloud compute ssh $VM --zone $ZONE --tunnel-through-iap -- -L 4319:127.0.0.1:43
 
 ```yaml
 retriever:
-  provider: "upstage"
+  provider: "upstage"                        # 임베딩 provider
   query_model: "solar-embedding-1-large-query"
   passage_model: "solar-embedding-1-large-passage"
-  search_k: 3
+  mode: "hybrid"                             # dense | hybrid
+  search_k: 3                                # 최종 검색 문서 수
+  dense_candidate_k: 10                      # hybrid에서 dense 후보 수
+  bm25_candidate_k: 50                       # hybrid에서 BM25 후보 수
+  hybrid_dense_weight: 0.65                  # RRF 가중치 (BM25는 1 - 이 값)
+  hybrid_rrf_k: 1
 
 llm:
-  provider: "deepseek"
-  model: "deepseek-v4-flash"
+  providers:                                 # 첫 번째가 main, 나머지가 fallback 순서
+    - provider: "deepseek"
+      model: "deepseek-v4-flash"
+    - provider: "anthropic"
+      model: "claude-haiku-4-5"
+    - provider: "openai"
+      model: "gpt-5.6-luna"
 
 rag:
   planner:
-    history_window: 6
+    history_window: 6                        # Planner가 보는 최근 대화 수
   policy_checker:
-    max_retries: 3
+    max_retries: 3                           # 최초 검색 포함 최대 4회
   answer_generator:
     history_window: 10
-
-evaluation:
-  example_path: "data/eval/eval_v1_50.jsonl"
-  provider: "anthropic"
-  model: "claude-haiku-4-5"
-  dataset_name: "PolicyRAGEval_v2_50"
-  experiment_prefix: "260709"
-  max_concurrency: 3
 ```
 
-정책 수집과 현재 기본 모델 실행에는 provider별 API 키가 필요합니다. 예를 들어
-현재 `config.yaml` 설정을 그대로 사용할 때는 다음 값을 `.env`에 둡니다.
+`llm.providers`는 순서가 곧 fallback 순서입니다. 각 provider는 재시도 가능한
+오류(rate limit, timeout, 5xx)에 대해 `max_attempts`(기본 3)까지 지수 백오프로
+재시도하고, 그래도 실패하면 다음 provider로 넘어갑니다.
+
+`retriever.provider`·`passage_model`은 Chroma에 실제로 적재된 조합과 일치해야
+합니다. 다르면 서버 기동 시 `verify_embedding_consistency`가 예외를 던집니다.
+
+API 키는 `.env`에 둡니다. 필요한 키는 `config.yaml`이 지정한 provider에 따라
+달라집니다. 위 기본 설정이라면 다음과 같습니다.
 
 ```bash
-YOUTH_API_KEY=...
-UPSTAGE_API_KEY=...
-DEEPSEEK_API_KEY=...
+YOUTH_API_KEY=...      # 온통청년 OpenAPI
+UPSTAGE_API_KEY=...    # 임베딩
+DEEPSEEK_API_KEY=...   # main LLM
+ANTHROPIC_API_KEY=...  # fallback LLM, 평가용 judge
+OPENAI_API_KEY=...     # fallback LLM
 ```
 
-LangFeather tracing은 기본적으로 켜져 있습니다. 최상위 LangGraph 실행과
-callback-visible node를 collector로 전송합니다. Collector가 없는 환경(예: CI)에서는
-꺼둘 수 있습니다.
+전체 환경변수는 `.env.example`을 참고하세요. tracing과 쿠키 관련 값도 여기에
+있습니다.
 
 ```bash
 LANGFEATHER_TRACING=true
 LANGFEATHER_ENDPOINT=http://127.0.0.1:4319
+SESSION_COOKIE_SECURE=false   # HTTPS 배포에서는 true
 ```
 
-RAG의 SSE metadata와 LangFeather trace는 같은 trace ID를 사용합니다. 상담 화면의
-도움됐어요/아쉬워요 피드백은 tracing이 활성화된 경우 해당 trace에 저장됩니다.
-전송은 best-effort이므로 collector가 꺼져 있어도 답변 생성은 계속되지만, 피드백
-저장 API는 503을 반환합니다.
-
-로컬에서 backend를 단독 실행할 때는 먼저 collector를 띄웁니다.
+RAG의 SSE `metadata`와 LangFeather trace는 같은 trace ID를 사용해서, 상담 화면의
+도움됐어요/아쉬워요 피드백이 해당 trace에 저장됩니다. 전송은 best-effort이므로
+collector가 꺼져 있어도 답변 생성은 계속되지만 피드백 API는 503을 반환합니다.
+로컬에서 collector가 필요하면 다음을 띄웁니다.
 
 ```bash
 docker run -d --name langfeather \
   -p 127.0.0.1:4319:4319 \
   -v langfeather-data:/data \
-  ghcr.io/sungjinwi99/langfeather:0.2.0
-
-uv run --locked uvicorn main:app --host 127.0.0.1 --port 8000
+  ghcr.io/sungjinwi99/langfeather:0.3.2
 ```
 
 ## 데이터 준비
 
-모든 명령은 프로젝트 루트에서 실행합니다.
+모든 명령은 프로젝트 루트에서 실행합니다. **처음 구축한다면 1 → 2 순서로 한 번씩
+실행하면 됩니다.**
 
 ### 1. 정책 데이터 수집
 
 수집과 동기화는 `scripts.sync_policies` 하나로 처리합니다.
 
-API 연결과 파일 생성을 10건으로 먼저 확인할 수 있습니다. 테스트 결과는
-`data/raw/youth_policies.sample.json`에 저장되어 운영 원본을 덮어쓰지 않습니다.
-
 ```bash
+# API 연결 확인 (10건만, data/raw/youth_policies.sample.json에 저장)
 uv run python -m scripts.sync_policies --limit-test
-```
 
-Chroma가 아직 없는 최초 구축에서는 원본 JSON만 수집한 뒤 아래 "2. Chroma
-적재"로 넘어갑니다. 수집 결과는 `config.yaml`의 `data.raw` 경로에 저장됩니다.
-
-```bash
+# 최초 구축: 원본 JSON만 수집
 uv run python -m scripts.sync_policies --snapshot-only
-```
 
-이미 Chroma가 있다면 먼저 반영 예정 건수를 확인합니다.
-
-```bash
+# 이미 Chroma가 있을 때: 반영 예정 건수 확인 후 실행
 uv run python -m scripts.sync_policies --dry-run
-```
-
-확인 후 동기화를 실행합니다.
-
-```bash
 uv run python -m scripts.sync_policies
 ```
 
-API 응답을 정답으로 삼아 신규 정책 추가, 내용이 바뀐 정책 재적재, API에서
-사라진 정책 삭제를 모두 반영하고 원본 JSON을 API 응답으로 교체합니다. 재적재
-판정은 실제 임베딩 문서(본문 + metadata) 기준이라 조회수처럼 문서에 들어가지
-않는 필드만 바뀐 정책은 다시 임베딩하지 않습니다.
+API 응답을 정답으로 삼아 신규 정책 추가, 내용이 바뀐 정책 재적재, API에서 사라진
+정책 삭제를 모두 반영합니다. 재적재 판정은 실제 임베딩 문서(본문 + metadata)
+기준이라 조회수처럼 문서에 들어가지 않는 필드만 바뀐 정책은 다시 임베딩하지
+않습니다.
 
 삭제 대상이 원본의 5%(최소 20건)를 넘으면 API 응답 이상을 의심해 변경 없이
-중단합니다. 의도한 삭제라면 `--allow-deletions`를 붙여 다시 실행합니다.
-동기화가 중간에 실패하면 원본 JSON이 그대로 남아, 다시 실행하면 같은 계획을
-다시 세워 남은 작업만 마저 반영합니다.
+중단합니다. 의도한 삭제라면 `--allow-deletions`를 붙입니다. 중간에 실패해도 원본
+JSON이 그대로 남아, 다시 실행하면 남은 작업만 마저 반영합니다.
 
-설정을 따로 지정하지 않으면 `config.yaml`의 원본 경로, Chroma 경로·컬렉션,
-`retriever.provider`, `retriever.passage_model`을 사용합니다. hybrid 모드에서는
-API 서버가 원본 JSON의 mtime 변경을 감지해 BM25 인덱스를 자동으로 다시
-빌드하므로(`run_bm25_refresh`, 최대 5분 지연) 동기화 후 서버를 재시작할
-필요가 없습니다.
+동기화 후 서버를 재시작할 필요는 없습니다. API 서버가 원본 JSON의 mtime 변경을
+감지해 BM25 인덱스를 백그라운드에서 다시 빌드합니다(최대 5분 지연).
 
 ### 2. Chroma 적재
 
@@ -358,78 +264,35 @@ API 서버가 원본 JSON의 mtime 변경을 감지해 BM25 인덱스를 자동�
 uv run python -m scripts.ingest_chroma
 ```
 
-정책명, 키워드, 카테고리, 정책 설명, 지원 내용을 임베딩하며 다음 정보는
-metadata로 함께 저장합니다.
+정책명, 키워드, 카테고리, 정책 설명, 지원 내용을 임베딩하고 다음을 metadata로
+저장합니다. 하드 필터와 Checker 판단, 답변의 상세 안내가 모두 이 metadata를
+사용합니다.
 
-- 정책 ID와 분류
-- 주관·운영 기관
-- 지원 연령과 소득 조건
-- 사업·신청 기간
-- 신청 방법과 URL
+- 정책 ID와 분류, 주관·운영 기관
+- 지원 연령, 소득 조건, 지역·직업·성별·혼인 상태
+- 사업·신청 기간, 신청 방법과 URL
 - 추가 자격 조건과 제출 서류
-- 지역, 직업, 성별, 혼인 상태
 
 ## 애플리케이션 실행
 
 ### FastAPI
 
 ```bash
-uvicorn main:app --reload --host 127.0.0.1 --port 8000
+uv run uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 - API 문서: `http://127.0.0.1:8000/docs`
 - OpenAPI 스키마: `http://127.0.0.1:8000/openapi.json`
 
-서버 시작 시 SQLite 테이블과 컴파일된 LangGraph RAG를 초기화합니다.
-
-### LangGraph 워크플로
-
-`src/rag/graph.py`의 그래프는 매 턴 Retrieval Planner가 현재 질문, 최근
-대화, 사용자 프로필, checkpoint의 활성 정책을 보고 검색 필요 여부와 Query를
-결정합니다. 새로 검색한 문서는 각각 독립된 `Send` 작업으로 Policy Checker에
-전달되어 병렬 평가됩니다.
-
-```text
-START
-  -> retrieval_planner
-  -> retriever?
-  -> Send(policy_checker × N)
-  -> policy_selector
-  -> answer_generator
-  -> END
-```
-
-- `retrieval_planner`: `user_requirement`, `needs_retrieval`,
-  `retrieval_query`, `retrieval_reason`을 구조화해 반환
-- `needs_retrieval=false`: 활성 정책 재사용이나 단순 응답처럼 검색 없이 답변 가능
-- `retriever`: 연령·지역·신청기간으로 Chroma metadata filter를 만들고 정책 문서를 검색.
-  소득은 하드 필터에 사용하지 않고 Policy Checker가 확인이 필요한 적합성 조건으로 판단
-- `policy_checker`: 검색 문서 수만큼 `Send`로 fan-out되며 각 정책에
-  `direct_fit`, `fit_needs_clarification`, `indirect`, `mismatch` verdict와 근거를 생성
-- `policy_selector`: `direct_fit`과 `fit_needs_clarification` 정책만 선택
-- 통과 정책이 없으면 `indirect`·`mismatch` 정책을 다음 검색에서 제외하고
-  `max_retries`까지 재검색. Query는 탈락 사유상 검색 방향을 바꿀 필요가 있을 때만
-  Planner가 변경하며, 단순 접미사 추가 같은 기계적 변경은 하지 않는다.
-  제외 적용 후 빈 결과가 나온 상태에서 Planner도 같은 Query를 제안하면 조기 종료한다.
-  기본값 3은 최초 검색을 포함해 최대 4번 검색한다는 의미
-- `answer_generator`: Checker를 통과한 정책, 사용자 프로필, 최근 대화만으로 답변 생성
-- graph state: `user_input`, `user_profile`, `exclude_expired`, `messages`,
-  `user_requirement`, `needs_retrieval`, `retrieval_query`, `retrieval_count`,
-  `retrieved_policies`, `checked_policies`, `active_policies`, `documents`, `answer`.
-  `retrieved_policies`는 이번 검색 후보, `checked_policies`는 현재 턴의 누적 판정,
-  `documents`는 이번 답변 근거, `active_policies`는 다음 턴에도 유지할 통과 정책이다.
-- conversation state: Human/AI 메시지를 사용자별 `thread_id`에 누적
+기동 시 SQLite 테이블을 만들고 LangGraph RAG를 컴파일하며, 만료 세션 정리와 BM25
+새로고침 백그라운드 태스크를 띄웁니다. `/health`는 Chroma 컬렉션 접근과 문서 수만
+확인합니다(외부 provider를 찌르지 않아 provider 지연이 컨테이너 재시작으로
+번지지 않습니다). 문서가 0건이면 503입니다.
 
 ### Next.js 프론트엔드
 
-FastAPI는 loopback에서 실행하고, Next.js가 브라우저의 `/api/*` 요청을
-FastAPI로 프록시합니다.
-
-```bash
-uv run --locked uvicorn main:app --host 127.0.0.1 --port 8000
-```
-
-별도 터미널에서 실행합니다.
+FastAPI를 loopback에서 띄운 뒤, 별도 터미널에서 실행합니다. 브라우저 요청은
+Next.js의 `/api/*` 프록시를 거치므로 FastAPI를 직접 노출할 필요가 없습니다.
 
 ```bash
 cd frontend
@@ -438,28 +301,61 @@ npm ci
 npm run dev
 ```
 
-같은 와이파이의 테스트 참여자에게 공개할 때는 `npm run dev:lan`을 사용하고
-`http://<컴퓨터의 사설 IP>:3000`으로 접속합니다. FastAPI 8000 포트는
-LAN에 공개할 필요가 없습니다.
+같은 와이파이의 다른 기기에 공개하려면 `npm run dev:lan`을 쓰고
+`http://<사설 IP>:3000`으로 접속합니다.
 
-프론트 제품 범위는 `docs/private/frontend_product_spec.md`, 배포 구조는
-아래 "배포"를 참고합니다.
+### LangGraph 워크플로
+
+[위 구조도](#langgraph-워크플로-구조)의 각 노드가 하는 일입니다. 코드는
+`src/rag/graph.py`와 `src/rag/nodes/`에 있습니다.
+
+| 노드 | 하는 일 |
+| --- | --- |
+| `retrieval_planner` | 현재 질문·최근 대화·프로필·활성 정책을 보고 `user_requirement`, `needs_retrieval`, `retrieval_query`, `retrieval_reason`을 구조화해 반환 |
+| `retriever` | 연령·지역·신청기간으로 metadata 필터를 만들고 hybrid 검색. 소득은 하드 필터에 쓰지 않고 Checker에게 넘김 |
+| `policy_checker` | 검색 문서 수만큼 `Send`로 fan-out. 정책마다 `direct_fit` / `fit_needs_clarification` / `indirect` / `mismatch` verdict와 근거 생성 |
+| `policy_selector` | `direct_fit`과 `fit_needs_clarification`만 채택 |
+| `answer_generator` | 통과한 정책, 프로필, 최근 대화만으로 답변 생성 |
+
+분기 규칙:
+
+- `needs_retrieval=false`면 검색을 건너뜁니다. 활성 정책 재사용, 단순 인사, 이미
+  답한 내용의 확인이 여기에 해당합니다. 활성 정책의 신청 방법·서류·일정 같은
+  후속 질문도, 그 정보가 문서에 없더라도 재검색하지 않습니다(한 정책이 문서 하나에
+  대응하므로 상세정보 부족은 다른 문서를 찾을 이유가 아닙니다).
+- 통과 정책이 0건이면 `indirect`·`mismatch` 정책을 다음 검색에서 제외하고
+  `max_retries`(기본 3, 최초 검색 포함 최대 4회)까지 재검색합니다. Query는 탈락
+  사유상 검색 방향을 바꿀 필요가 있을 때만 Planner가 변경합니다.
+- 제외를 적용해도 빈 결과이고 Planner가 같은 Query를 다시 제안하면 조기
+  종료합니다.
+
+state는 `src/rag/state.py`에 정의돼 있습니다. `retrieved_policies`는 이번 검색
+후보, `checked_policies`는 현재 턴의 누적 판정, `documents`는 이번 답변의 근거,
+`active_policies`는 다음 턴에도 유지할 통과 정책입니다. Human/AI 메시지는
+사용자별 `thread_id`에 SQLite checkpoint로 누적됩니다.
 
 ## API
 
 | Method | Endpoint | 설명 |
 | --- | --- | --- |
+| `GET` | `/health` | Chroma 컬렉션 상태와 문서 수 |
 | `GET` | `/policies/{policy_id}` | 정책 상세 정보 조회 |
 | `POST` | `/policies/batch` | 여러 정책 상세 정보 조회 |
 | `POST` | `/sessions/anonymous` | 30일 익명 상담 세션 생성 |
 | `GET` | `/sessions/current` | 현재 익명 세션과 프로필 조회 |
 | `PATCH` | `/me/profile` | 현재 세션의 프로필 수정 |
-| `GET` | `/me/conversation` | 현재 세션의 상담과 활성 정책 복원 |
+| `GET` | `/me/conversation` | 현재 상담과 활성 정책 복원 |
 | `POST` | `/me/chat` | 익명 세션 기반 SSE 상담 |
+| `POST` | `/me/feedback` | 답변 피드백 저장 (LangFeather trace에 기록) |
 | `DELETE` | `/me/conversation` | 현재 상담 기록 초기화 |
 | `DELETE` | `/me/data` | 프로필·상담·익명 세션 전체 삭제 |
 
-익명 상담 세션 생성 예시:
+유료 LLM 남용을 막기 위해 토큰 버킷 rate limit이 걸려 있습니다. `/me/chat`은
+세션당 버스트 5회 + 30초당 1회 회복, 세션 생성은 IP당 버스트 5회 + 12분당 1회
+회복입니다. 초과하면 `Retry-After` 헤더와 함께 429를 반환합니다. 버킷은
+in-memory라 워커를 늘리면 상한이 워커 수만큼 곱해집니다(단일 워커 전제).
+
+익명 세션을 만들고 쿠키를 저장합니다.
 
 ```bash
 curl -c /tmp/youth-policy-cookies.txt \
@@ -475,7 +371,7 @@ curl -c /tmp/youth-policy-cookies.txt \
   }'
 ```
 
-스트리밍 채팅은 위에서 받은 세션 쿠키를 함께 보냅니다.
+그 쿠키로 스트리밍 상담을 요청합니다.
 
 ```bash
 curl -N -b /tmp/youth-policy-cookies.txt \
@@ -488,12 +384,13 @@ curl -N -b /tmp/youth-policy-cookies.txt \
 ```
 
 SSE 응답은 처리 단계를 알리는 `status`, 검색 context와 정책 ID를 담은 `metadata`,
-답변 텍스트 조각을 담은 `chunk`, 완료를 알리는 `done` 이벤트로 전달됩니다.
+답변 조각 `chunk`, 완료를 알리는 `done` 이벤트로 전달됩니다. 스트림 도중 실패는
+HTTP 상태로 알릴 수 없으므로 `error` 이벤트 후 `done`으로 닫습니다.
 
 ```text
 data: {"type":"status","data":{"stage":"search","message":"관련 정책을 검색하고 있습니다."}}
 
-data: {"type":"metadata","data":{"contexts":[...],"retrieved_policy_ids":[...]}}
+data: {"type":"metadata","data":{"contexts":[...],"retrieved_policy_ids":[...],"trace_id":"..."}}
 
 data: {"type":"chunk","data":"답변 일부"}
 
@@ -502,56 +399,43 @@ data: {"type":"done"}
 
 ## RAG 평가
 
-평가 데이터는 `config.yaml`의 `evaluation.example_path`에서 관리합니다. 각 사례는
-질문, 사용자 프로필, 정답 정책 ID, 만료 정책 제외 여부, metadata를 포함합니다.
-
-평가 데이터를 생성합니다.
+평가 데이터는 `config.yaml`의 `evaluation.example_path`가 가리키는 JSONL입니다.
+각 사례는 질문, 사용자 프로필, 정답 정책 ID, 만료 정책 제외 여부, metadata를
+포함합니다.
 
 ```bash
+# 평가 데이터 생성 (기본 500건, seed 42로 재현 가능)
 uv run python -m scripts.generate_eval_dataset --sample-size 100 --overwrite
-```
 
-기본 생성 크기는 500건이며, 재현 가능한 생성을 위해 seed는 기본값 `42`를
-사용합니다. 여러 모델을 섞어 질문을 생성하려면
-`--generation-model PROVIDER/MODEL=WEIGHT` 옵션을 사용할 수 있습니다.
-
-로컬 JSONL 평가 사례로 LangGraph RAG와 evaluator를 실행합니다.
-
-```bash
+# end-to-end RAG 품질 평가 → data/eval/rag_results.json
 uv run python -m scripts.evaluate_rag
-```
 
-같은 retrieval 진입점에서 dense, BM25, hybrid를 로컬에서 평가합니다.
-
-```bash
+# retrieval만 평가 (dense · bm25 · hybrid를 같은 진입점에서)
 uv run python -m scripts.evaluate_retrieval run \
-  --tracking local \
   --provider upstage \
   --model solar-embedding-1-large-query \
   --chroma-dir data/chroma \
-  --retrieval-mode dense
+  --retrieval-mode hybrid
 ```
-
-Planner query cache는 현재 Planner 출력과 동일한 schema version 2를 사용합니다.
-기존 `planner_route`, `answer_strategy`, `retrieval_queries` 기반 캐시는 호환되지
-않으므로 새 파일로 다시 생성해야 합니다. Planner query cache나 hybrid 가중치
-sweep의 전체 옵션은 각각
-`uv run python -m scripts.generate_planner_query_cache --help`,
-`uv run python -m scripts.evaluate_retrieval sweep --help`로 확인할 수 있습니다.
-
-평가 지표:
 
 | 지표 | 계산 방식 |
 | --- | --- |
-| Context Recall | 정답 정책 ID 중 검색된 정책 ID의 비율 |
-| Context Average Helpfulness | 검색된 각 context가 질문과 프로필에 얼마나 도움이 되는지 LLM judge로 평가 |
-| Faithfulness | 답변의 사실 주장이 검색 context에 근거하는지 LLM judge로 평가 |
-| Answer Relevance | 답변이 질문과 사용자 프로필 요구에 직접 답하는지 LLM judge로 평가 |
+| Context Recall | 정답 정책 ID 중 검색된 정책 ID의 비율 (ID 직접 비교) |
+| Context Average Helpfulness | 검색된 각 context가 질문·프로필에 얼마나 도움이 되는지 LLM judge |
+| Faithfulness | 답변의 사실 주장이 검색 context에 근거하는지 LLM judge |
+| Answer Relevance | 답변이 질문과 프로필 요구에 직접 답하는지 LLM judge |
 
-Context Recall은 정책 ID를 직접 비교하고, Context Average Helpfulness,
-Faithfulness, Answer Relevance는 평가 모델을 호출합니다.
+judge 모델은 `config.yaml`의 `evaluation.provider`/`model`을 사용합니다.
 
-관찰된 답변 실패 사례는 별도 회귀셋으로 다시 실행할 수 있습니다.
+hybrid 가중치 sweep과 Planner query cache의 전체 옵션은 각각
+`uv run python -m scripts.evaluate_retrieval sweep --help`,
+`uv run python -m scripts.generate_planner_query_cache --help`로 확인합니다.
+Planner query cache는 현재 Planner 출력과 같은 schema version 2를 사용하므로,
+이전 schema로 만든 캐시는 다시 생성해야 합니다.
+
+관찰된 답변 실패 사례는 별도 회귀셋으로 다시 실행할 수 있습니다. 케이스 추가
+방법과 자동 검사/정성 판정의 구분은 `docs/failure_regression_cases.yaml`을
+참고하세요.
 
 ```bash
 uv run python scripts/rerun_failed_answer_cases.py \
@@ -559,11 +443,16 @@ uv run python scripts/rerun_failed_answer_cases.py \
   --fail-on-automated-check
 ```
 
-케이스 추가 방법, 자동 검사와 정성 판정의 구분, 만료 정책 포함 진단은
-`docs/failure_regression_suite.md`를 참고합니다.
-
 ## 테스트
 
 ```bash
 uv run pytest -q
+```
+
+프론트엔드는 별도로 검증합니다.
+
+```bash
+cd frontend
+npm run lint
+npm run build
 ```
