@@ -45,11 +45,6 @@
        alt="main 푸시가 GitHub Actions에서 테스트와 이미지 빌드를 거쳐 Artifact Registry에 올라가고, GCP Compute Engine VM 한 대가 이미지를 받아 Docker Compose로 Caddy·Next.js·FastAPI·LangFeather 컨테이너를 띄운다. 브라우저 요청은 80 포트로 들어와 Caddy와 Next.js를 거쳐 FastAPI에 닿고, api 컨테이너 안의 LangGraph RAG가 계획·검색·검수·생성을 수행하며 Upstage 임베딩과 Chat LLM, 온통청년 OpenAPI를 호출한다. 정책 원본과 Chroma 인덱스, SQLite 두 개는 호스트 볼륨의 data 디렉터리에 남는다">
 </p>
 
-브라우저에 열리는 포트는 하나(로컬은 Next.js `3000`, 배포는 Caddy `80`)뿐이고
-FastAPI는 Compose 내부 네트워크에서만 접근됩니다. SQLite 두 개에 매 요청 쓰고
-BM25 역색인을 프로세스 메모리에 들고 있어 **단일 인스턴스 전제**입니다.
-배포 절차는 [docs/deployment.md](docs/deployment.md)에 있습니다.
-
 ### LangGraph 워크플로 구조
 
 ```mermaid
