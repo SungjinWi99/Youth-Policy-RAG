@@ -42,7 +42,7 @@
 
 <p align="center">
   <img src="./docs/images/architecture.svg" width="100%"
-       alt="main 푸시가 GitHub Actions에서 테스트와 이미지 빌드를 거쳐 Artifact Registry에 올라가고, GCP Compute Engine VM 한 대가 이미지를 받아 Docker Compose로 Caddy·Next.js·FastAPI·LangFeather 컨테이너를 띄운다. 브라우저 요청은 80 포트로 들어와 Caddy와 Next.js를 거쳐 FastAPI에 닿고, api 컨테이너 안의 LangGraph RAG가 계획·검색·검수·생성을 수행하며 Upstage 임베딩과 Chat LLM, 온통청년 OpenAPI를 호출한다. 정책 원본과 Chroma 인덱스, SQLite 두 개는 호스트 볼륨의 data 디렉터리에 남는다">
+       alt="main 푸시가 GitHub Actions의 test·build&push·deploy 세 job을 거쳐 api·web 이미지를 Artifact Registry에 올리고, IAP 터널 SSH로 GCP VM에 접속해 docker compose pull과 up --wait으로 교체한다. VM은 tcp 80만 공개하며 Caddy·Next.js·FastAPI·LangFeather 네 컨테이너를 Compose로 띄우고, 브라우저 요청은 80 포트의 Caddy를 거쳐 Next.js와 FastAPI로 이어진다. 정책 원본 JSON과 Chroma 인덱스, SQLite 두 개는 호스트 data 디렉터리에 마운트되고, 매일 04:00 KST에 별도 워크플로가 일회용 api 컨테이너로 온통청년 API 전체 목록을 대조해 스냅샷과 인덱스를 갱신한다">
 </p>
 
 ### LangGraph 워크플로 구조
